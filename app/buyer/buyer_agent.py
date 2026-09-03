@@ -10,33 +10,72 @@ and upsell evaluation logic.
 
 import os
 import re
+import json
 from typing import Tuple, Optional
 from app.models import AP2MandateSignature, ProductQuery, UpsellOffer, Product
 from app.protocols.ap2_mandate import AP2MandateEngine
-
-# Check for Google Gemini API Key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+from app.config import settings
 
 class AIBuyerAgent:
     def __init__(self, agent_id: str = "buyer_agent_alpha_01", user_id: str = "user_dev_rahul"):
         self.agent_id = agent_id
         self.user_id = user_id
-        self.genai_client = None
-        if GEMINI_API_KEY:
+        self._client = None
+        self._gemini_error = None
+
+        if not settings.is_gemini_configured():
+            self._gemini_error = "GEMINI_API_KEY is required. Set it in .env file. Get a free key at https://aistudio.google.com/app/apikey"
+        else:
             try:
                 from google import genai
-                self.genai_client = genai.Client(api_key=GEMINI_API_KEY)
-            except Exception:
-                self.genai_client = None
+                self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            except Exception as e:
+                self._client = None
+                self._gemini_error = f"Failed to initialize Gemini client: {e}"
+
+    @property
+    def genai_client(self):
+        if not self._client and self._gemini_error:
+            raise RuntimeError(self._gemini_error)
+        return self._client
+
+    def get_status(self) -> dict:
+        return {
+            'gemini_configured': settings.is_gemini_configured(),
+            'gemini_error': self._gemini_error,
+            'agent_id': self.agent_id
+        }
 
     def extract_intent_and_budget(self, user_prompt: str) -> Tuple[str, float, str]:
         """
         Parses intent, budget limit in INR, and target product category from arbitrary user input.
         """
+        if settings.is_gemini_configured() and self._client:
+            try:
+                prompt = f'Parse this purchase request and return ONLY valid JSON with keys: intent (string describing what they want), budget_inr (number, extract from text or use 50000 as default), category (one of: charging/laptops/peripherals/displays/audio/electronics). Request: "{user_prompt}"'
+                
+                response = self._client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                
+                if response and response.text:
+                    text = response.text.strip()
+                    if text.startswith('```json'):
+                        text = text[7:]
+                    if text.startswith('```'):
+                        text = text[3:]
+                    if text.endswith('```'):
+                        text = text[:-3]
+                    
+                    data = json.loads(text.strip())
+                    return data.get('intent', 'Hardware Procurement'), float(data.get('budget_inr', 50000.0)), data.get('category', 'electronics')
+            except Exception:
+                pass
+                
+        # Regex fallback
         prompt_lower = user_prompt.lower()
-
-        # Extract budget INR using regex
-        budget = 50000.0  # default fallback budget
+        budget = 50000.0
         budget_matches = re.findall(r"(?:under|below|budget|max|limit)?\s*₹?\s*([\d,]+)", prompt_lower)
         if budget_matches:
             for match in budget_matches:
@@ -88,15 +127,19 @@ class AIBuyerAgent:
         if headroom < 0:
             return False, f"REJECTED: Offer total ₹{upsell.new_cart_total_inr:,.2f} exceeds AP2 Mandate limit ₹{mandate.mandate.max_amount_inr:,.2f} by ₹{abs(headroom):,.2f}."
 
-        # If GenAI Client available, generate dynamic reasoning pitch
-        if self.genai_client:
+        if settings.is_gemini_configured() and self._client:
             try:
-                response = self.genai_client.models.generate_content(
+                prompt = f"You are an AI Buyer Agent. Your user mandate cap is ₹{mandate.mandate.max_amount_inr}. Merchant offered {upsell.product.name} for ₹{upsell.additional_cost_inr}. Total order will be ₹{upsell.new_cart_total_inr}. Evaluate ROI, budget fit, and value proposition. Give a clear ACCEPT or REJECT decision followed by 1-sentence reasoning."
+                response = self._client.models.generate_content(
                     model="gemini-2.5-flash",
-                    contents=f"You are an AI Buyer Agent. Your user mandate cap is ₹{mandate.mandate.max_amount_inr}. Merchant offered {upsell.product.name} for ₹{upsell.additional_cost_inr}. Total order will be ₹{upsell.new_cart_total_inr}. Evaluate ROI and give a 1-sentence decision."
+                    contents=prompt
                 )
                 if response and response.text:
-                    return True, f"ACCEPTED (Gemini LLM Reasoned): {response.text.strip()}"
+                    text = response.text.strip().upper()
+                    if "ACCEPT" in text and "REJECT" not in text.split("ACCEPT")[0]:
+                        return True, f"ACCEPTED (Gemini LLM Reasoned): {response.text.strip()}"
+                    else:
+                        return False, f"REJECTED (Gemini LLM Reasoned): {response.text.strip()}"
             except Exception:
                 pass
 

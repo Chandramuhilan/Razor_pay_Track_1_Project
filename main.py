@@ -199,16 +199,41 @@ def get_catalog():
 @app.post(
     "/api/catalog/search",
     tags=["Catalog / UCP"],
-    summary="Vector similarity catalog search with budget constraint",
+    summary="Structured catalog search with budget + category filtering",
 )
 def search_catalog(query: ProductQuery):
-    """TF-IDF vector similarity catalog search filtered by budget and stock status."""
-    products, match_count, top_sim = catalog.vector_search_catalog(query)
+    """
+    Structured catalog search — no embeddings, no RAG.
+    Filters by stock availability, budget, and category; ranks by structured field scoring.
+    """
+    products, match_count, meta = catalog.structured_search(query)
     return {
         "query": query,
         "matched_count": match_count,
-        "top_vector_similarity": top_sim,
+        "search_method": "structured_field_scoring",
+        "detected_categories": meta.get("detected_categories", []),
         "results": products,
+    }
+
+
+@app.get(
+    "/api/merchant/stock",
+    tags=["Catalog / UCP"],
+    summary="Real-time inventory snapshot — stock levels for all products",
+)
+def get_stock_snapshot():
+    """
+    Returns current stock levels for every product.
+    Stock is automatically decremented after each confirmed payment.
+    Every deduction is recorded in the cryptographic audit ledger.
+    """
+    snapshot = catalog.get_stock_snapshot()
+    return {
+        "merchant_id": "merchant_techverse_01",
+        "total_products": len(snapshot),
+        "in_stock_count": sum(1 for p in snapshot if p["in_stock"]),
+        "out_of_stock_count": sum(1 for p in snapshot if not p["in_stock"]),
+        "inventory": snapshot,
     }
 
 
@@ -351,10 +376,36 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
 
     state_machine.transition_to("DISCOVERED")
     q = ProductQuery(query_text=user_query, max_budget_inr=effective_budget)
-    results, match_count, top_sim = catalog.vector_search_catalog(q)
+    results, match_count, search_meta = catalog.structured_search(q)
 
-    telemetry_logs.append({"section": "VECTOR_SEARCH", "text": f"> Vector Search: {match_count} Catalog Matches Found (Top Sim: {top_sim * 100:.1f}%)"})
+    detected_cats = search_meta.get("detected_categories", [])
+    top_score = search_meta.get("top_structured_score", 0.0)
+
+    audit_ledger.record_event(
+        actor="MERCHANT_AGENT",
+        state="CATALOG_SEARCH",
+        title="Structured Catalog Search Executed",
+        details={
+            "session_id": session_id,
+            "query": user_query,
+            "max_budget_inr": effective_budget,
+            "detected_categories": detected_cats,
+            "match_count": match_count,
+            "top_score": top_score,
+            "search_method": "structured_field_scoring",
+        },
+        session_id=session_id,
+    )
+    telemetry_logs.append({
+        "section": "CATALOG_SEARCH",
+        "text": (
+            f"> Structured Search: {match_count} matches | "
+            f"Category: {', '.join(detected_cats) if detected_cats else 'general'} | "
+            f"Budget filter: ≤₹{effective_budget:,.2f}"
+        ),
+    })
     telemetry_logs.append({"section": "BUDGET_CONSTRAINT", "text": f"> Budget Constraint: Max ₹{effective_budget:,.2f}"})
+
 
     if not results:
         state_machine.fail("No products found within budget")
@@ -474,12 +525,58 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
     state_machine.transition_to("ORDER_CONFIRMED")
     order_num = f"#ORD-{uuid.uuid4().hex[:4].upper()}"
 
+    # ── Stock deduction — runs automatically after payment confirmed ──────
+    stock_updates: List[Dict] = []
+    for item in cart.items:
+        try:
+            stock_info = catalog.deduct_stock(item.product_id, item.quantity)
+            stock_updates.append(stock_info)
+            # Every stock change is audited on the merchant ledger
+            audit_ledger.record_event(
+                actor="MERCHANT_AGENT",
+                state="STOCK_DEDUCTED",
+                title=f"Stock Deducted: {item.name}",
+                details={
+                    "session_id": session_id,
+                    "order_id": order_res.order_id,
+                    "product_id": item.product_id,
+                    "product_name": item.name,
+                    "quantity_deducted": item.quantity,
+                    "stock_before": stock_info["stock_before"],
+                    "stock_after": stock_info["stock_after"],
+                    "still_in_stock": stock_info["still_in_stock"],
+                    "is_upsell_item": item.is_upsell,
+                },
+                session_id=session_id,
+            )
+            telemetry_logs.append({
+                "section": "STOCK_DEDUCTED",
+                "text": (
+                    f"> Stock Update: {item.name} | "
+                    f"qty={item.quantity} | before={stock_info['stock_before']} → after={stock_info['stock_after']}"
+                ),
+            })
+        except ValueError as stock_err:
+            # Log stock error but don't fail the transaction (payment already captured)
+            audit_ledger.record_event(
+                actor="MERCHANT_AGENT",
+                state="STOCK_WARNING",
+                title=f"Stock Deduction Warning: {item.name}",
+                details={"session_id": session_id, "error": str(stock_err)},
+                session_id=session_id,
+            )
+            telemetry_logs.append({
+                "section": "STOCK_WARNING",
+                "text": f"> Stock Warning: {stock_err}",
+            })
+
     chat_transcript.append({
         "speaker": "Merchant Agent",
         "role": "MERCHANT",
-        "text": f'"Payment of ₹{total_amount:,.2f} captured. Receipt sent. Order ID: {order_num}."',
+        "text": f'"Payment of ₹{total_amount:,.2f} captured. Inventory updated. Receipt sent. Order ID: {order_num}."',
     })
     telemetry_logs.append({"section": "TRANSACTION_STATUS", "text": "> Transaction Status: SUCCESS (Captured)"})
+
 
     audit_rec_final = audit_ledger.record_event(
         actor="MERCHANT_AGENT",

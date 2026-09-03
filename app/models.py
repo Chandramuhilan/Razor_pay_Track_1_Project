@@ -25,7 +25,16 @@ class Product(BaseModel):
     tags: List[str] = []
     merchant_margin_pct: float = Field(default=0.20, description="Merchant profit margin percentage for dynamic upsell calculation")
     in_stock: bool = True
+    stock_quantity: int = Field(default=100, description="Actual inventory count. in_stock is derived from stock_quantity > 0.")
     specifications: Dict[str, Any] = Field(default_factory=dict)
+
+    def deduct(self, qty: int = 1) -> None:
+        """Decrement inventory. Raises ValueError if insufficient stock."""
+        if self.stock_quantity < qty:
+            raise ValueError(f"Insufficient stock for '{self.name}': available={self.stock_quantity}, requested={qty}")
+        self.stock_quantity -= qty
+        self.in_stock = self.stock_quantity > 0
+
 
 class ProductQuery(BaseModel):
     query_text: str

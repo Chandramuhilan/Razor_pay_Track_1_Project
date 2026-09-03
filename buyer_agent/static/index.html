@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Buyer Agent — Agentic Commerce</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #7d8590;
+      --blue: #58a6ff;
+      --green: #3fb950;
+      --orange: #d29922;
+      --purple: #bc8cff;
+      --red: #f85149;
+      --cyan: #39d353;
+      --buyer-bubble: #1c3a5c;
+      --merchant-bubble: #1a2e1a;
+      --system-bubble: #252525;
+      --radius: 10px;
+      --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+    }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ── Top Header Bar ───────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    header .logo { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+    header .logo span { color: var(--blue); }
+    header .track-badge {
+      background: linear-gradient(135deg, #1a3a5c, #1c2e4a);
+      border: 1px solid #2d5a8e;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+    }
+    .status-dots { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+    .dot-label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background 0.3s; }
+    .dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot.red { background: var(--red); }
+    .dot.pulse { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{ opacity:1; } 50%{ opacity:0.4; } }
+
+    /* ── Config Warning Banner ────────────────────────────────────────── */
+    #config-banner {
+      display: none;
+      background: #2d1f00;
+      border-bottom: 1px solid #6e4c00;
+      padding: 10px 20px;
+      font-size: 13px;
+      color: #ffcc00;
+      align-items: center;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    #config-banner.show { display: flex; }
+    #config-banner a { color: var(--orange); text-decoration: underline; }
+    #config-banner .missing-keys { font-family: var(--mono); background: #3d2900; padding: 2px 6px; border-radius: 4px; font-size: 11px; }
+
+    /* ── Main Split Layout ────────────────────────────────────────────── */
+    .workspace {
+      display: grid;
+      grid-template-columns: 420px 1fr;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── LEFT PANEL — Buyer Console ───────────────────────────────────── */
+    .buyer-panel {
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 14px 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .panel-header .icon { font-size: 16px; }
+    .merchant-status {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    /* Chat thread */
+    #chat-thread {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .chat-msg {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: 88%;
+      animation: slideIn 0.2s ease;
+    }
+    @keyframes slideIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+    .chat-msg.buyer { align-self: flex-end; }
+    .chat-msg.merchant { align-self: flex-start; }
+    .chat-msg.system { align-self: center; max-width: 100%; }
+    .chat-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .chat-msg.buyer .chat-label { text-align: right; }
+    .chat-bubble {
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      font-size: 13.5px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+    .chat-msg.buyer .chat-bubble { background: var(--buyer-bubble); border-bottom-right-radius: 3px; color: #a8d8ff; }
+    .chat-msg.merchant .chat-bubble { background: var(--merchant-bubble); border-bottom-left-radius: 3px; color: #a8d8a8; }
+    .chat-msg.system .chat-bubble { background: var(--system-bubble); color: var(--muted); font-size: 12px; text-align: center; border-radius: 20px; padding: 6px 14px; }
+
+    /* Receipt card in chat */
+    .receipt-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      font-size: 12.5px;
+      line-height: 1.8;
+      width: 100%;
+      max-width: 100%;
+    }
+    .receipt-card .receipt-title { font-weight: 700; font-size: 14px; color: var(--green); margin-bottom: 8px; }
+    .receipt-card .receipt-row { display: flex; justify-content: space-between; gap: 8px; }
+    .receipt-card .receipt-row .label { color: var(--muted); }
+    .receipt-card .receipt-row .val { font-family: var(--mono); color: var(--text); font-size: 12px; }
+    .receipt-card .receipt-row .val.green { color: var(--green); }
+    .receipt-card hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+
+    /* Input area */
+    .input-area {
+      padding: 14px 16px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex-shrink: 0;
+    }
+    .input-area textarea {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 13.5px;
+      padding: 10px 14px;
+      resize: none;
+      outline: none;
+      font-family: inherit;
+      line-height: 1.5;
+      transition: border-color 0.2s;
+    }
+    .input-area textarea:focus { border-color: var(--blue); }
+    .input-area textarea::placeholder { color: var(--muted); }
+    .input-row { display: flex; gap: 8px; align-items: center; }
+    .budget-input {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0 10px;
+      flex: 1;
+    }
+    .budget-input span { color: var(--muted); font-size: 13px; }
+    .budget-input input {
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font-size: 13px;
+      padding: 9px 0;
+      outline: none;
+      width: 100%;
+      font-family: var(--mono);
+    }
+    .budget-input input::placeholder { color: var(--muted); }
+    .btn-primary {
+      background: linear-gradient(135deg, #238636, #2ea043);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      padding: 9px 20px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: opacity 0.2s, transform 0.1s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn-primary:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 9px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+    .btn-secondary:hover { color: var(--text); }
+    .btn-demo {
+      background: #2d0a0a;
+      color: var(--red);
+      border: 1px solid #6b1010;
+      border-radius: var(--radius);
+      padding: 9px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-demo:hover { background: #3d1010; }
+
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── RIGHT PANEL — Agent Monitor ─────────────────────────────────── */
+    .monitor-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .monitor-header {
+      padding: 0 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0;
+      flex-shrink: 0;
+      overflow-x: auto;
+    }
+    .tab-btn {
+      padding: 12px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted);
+      cursor: pointer;
+      border: none;
+      background: none;
+      border-bottom: 2px solid transparent;
+      transition: color 0.2s;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .tab-content { display: none; flex: 1; overflow-y: auto; padding: 0; }
+    .tab-content.active { display: flex; flex-direction: column; }
+
+    /* Live Log */
+    #log-container {
+      flex: 1;
+      overflow-y: auto;
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .log-entry {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 4px 8px;
+      border-radius: 6px;
+      animation: slideIn 0.15s ease;
+      line-height: 1.5;
+    }
+    .log-entry:hover { background: var(--surface2); }
+    .log-time { color: var(--muted); flex-shrink: 0; }
+    .log-badge {
+      flex-shrink: 0;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      min-width: 72px;
+      text-align: center;
+    }
+    .badge-SYSTEM    { background: #252525; color: var(--muted); }
+    .badge-INTENT    { background: #1c2e4a; color: var(--blue); }
+    .badge-MANDATE   { background: #2d1f00; color: var(--orange); }
+    .badge-MCP       { background: #0d2818; color: var(--green); }
+    .badge-A2A       { background: #1a1a3a; color: #9d8cff; }
+    .badge-RAZORPAY  { background: #2a1040; color: var(--purple); }
+    .badge-COMPLETE  { background: #0d2818; color: var(--cyan); }
+    .badge-ERROR     { background: #2d0c0c; color: var(--red); }
+    .badge-CONFIG    { background: #3d2900; color: #ffcc00; }
+    .log-msg { color: var(--text); word-break: break-word; flex: 1; }
+    .log-msg .detail { color: var(--muted); margin-top: 2px; font-size: 11px; }
+
+    /* Structured panels for tabs */
+    .tab-inner { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .info-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .info-card-header {
+      padding: 8px 14px;
+      background: var(--surface);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .info-card-body { padding: 12px 14px; font-size: 13px; line-height: 1.8; }
+    .info-row { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--border); padding: 6px 0; }
+    .info-row:last-child { border-bottom: none; }
+    .info-row .k { color: var(--muted); font-size: 12px; }
+    .info-row .v { font-family: var(--mono); font-size: 12px; color: var(--text); text-align: right; word-break: break-all; }
+    .info-row .v.green { color: var(--green); }
+    .info-row .v.red { color: var(--red); }
+    .info-row .v.orange { color: var(--orange); }
+    .info-row .v.blue { color: var(--blue); }
+    .info-row .v.purple { color: var(--purple); }
+    .empty-state { color: var(--muted); text-align: center; padding: 40px 20px; font-size: 13px; }
+    .empty-state .icon { font-size: 32px; margin-bottom: 8px; }
+    .mcp-call-entry { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 8px; }
+    .mcp-call-entry-header { padding: 8px 14px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--green); background: var(--surface); border-bottom: 1px solid var(--border); }
+    .mcp-call-entry-body { padding: 10px 14px; font-size: 12px; font-family: var(--mono); color: var(--text); white-space: pre-wrap; word-break: break-word; }
+    .status-pill { padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+    .pill-ok { background: #0d2818; color: var(--green); }
+    .pill-err { background: #2d0c0c; color: var(--red); }
+    .pill-ok::before { content: '✓ '; }
+    .pill-err::before { content: '✗ '; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">🤖 <span>Buyer</span>Agent</div>
+  <div class="track-badge">Track 01 — AI Growth &amp; Agentic Commerce</div>
+  <div class="status-dots">
+    <span class="dot-label"><span class="dot" id="dot-gemini"></span> Gemini</span>
+    <span class="dot-label"><span class="dot" id="dot-razorpay"></span> Razorpay</span>
+    <span class="dot-label"><span class="dot" id="dot-merchant"></span> Merchant Agent</span>
+  </div>
+</header>
+
+<!-- ── Config Banner ───────────────────────────────────────────────────── -->
+<div id="config-banner">
+  ⚠️ &nbsp;Missing API keys:
+  <span class="missing-keys" id="banner-keys"></span>
+  — demo will show the full flow with simulated data.
+  Set keys in <code style="background:#3d2900;padding:2px 6px;border-radius:4px;">.env</code> for live mode.
+  <a href="https://aistudio.google.com/app/apikey" target="_blank">Get Gemini key</a> ·
+  <a href="https://dashboard.razorpay.com" target="_blank">Get Razorpay test keys</a>
+</div>
+
+<!-- ── Split Workspace ─────────────────────────────────────────────────── -->
+<div class="workspace">
+
+  <!-- LEFT: Buyer Console -->
+  <div class="buyer-panel">
+    <div class="panel-header">
+      <span class="icon">💬</span> Buyer Console
+      <div class="merchant-status">
+        <span class="dot" id="merchant-dot"></span>
+        <span id="merchant-status-text">Checking merchant…</span>
+      </div>
+    </div>
+
+    <div id="chat-thread">
+      <div class="chat-msg system">
+        <div class="chat-bubble">
+          Tell me what you want to buy. I'll find it, negotiate the best price, and complete the payment — autonomously.
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <textarea id="query-input" rows="2" placeholder="e.g. I need a laptop for programming under ₹70,000"></textarea>
+      <div class="input-row">
+        <div class="budget-input">
+          <span>Max ₹</span>
+          <input id="budget-input" type="number" placeholder="70000" value="70000" min="0" />
+        </div>
+        <button class="btn-secondary" id="reset-btn" onclick="resetSession()">Reset</button>
+        <button class="btn-demo" id="demo-breach-btn" onclick="demobreach()" title="Demo: Forces a ₹75k cart against ₹70k mandate — shows BLOCKED">
+          ⛔ Show Breach
+        </button>
+        <button class="btn-primary" id="buy-btn" onclick="startPipeline()">
+          <span id="buy-btn-content">Buy Now →</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Agent Monitor -->
+  <div class="monitor-panel">
+    <div class="monitor-header">
+      <button class="tab-btn active" onclick="switchTab('log')">📋 Live Log</button>
+      <button class="tab-btn" onclick="switchTab('a2a')">🔗 A2A Protocol</button>
+      <button class="tab-btn" onclick="switchTab('mcp')">🛠 MCP Tools</button>
+      <button class="tab-btn" onclick="switchTab('mandate')">🔒 AP2 Mandate</button>
+      <button class="tab-btn" onclick="switchTab('payment')">💳 Payment</button>
+      <button class="tab-btn" onclick="switchTab('receipt')">🧾 Receipt</button>
+    </div>
+
+    <!-- Tab: Live Log -->
+    <div class="tab-content active" id="tab-log">
+      <div id="log-container">
+        <div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:20px 8px;text-align:center;">
+          Waiting for pipeline to start…
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: A2A Protocol -->
+    <div class="tab-content" id="tab-a2a">
+      <div class="tab-inner" id="a2a-content">
+        <div class="empty-state"><div class="icon">🔗</div>No A2A messages yet</div>
+      </div>
+    </div>
+
+    <!-- Tab: MCP Tools -->
+    <div class="tab-content" id="tab-mcp">
+      <div class="tab-inner" id="mcp-content">
+        <div class="empty-state"><div class="icon">🛠</div>No MCP tool calls yet</div>
+      </div>
+    </div>
+
+    <!-- Tab: AP2 Mandate -->
+    <div class="tab-content" id="tab-mandate">
+      <div class="tab-inner" id="mandate-content">
+        <div class="empty-state"><div class="icon">🔒</div>No mandate issued yet</div>
+      </div>
+    </div>
+
+    <!-- Tab: Payment -->
+    <div class="tab-content" id="tab-payment">
+      <div class="tab-inner" id="payment-content">
+        <div class="empty-state"><div class="icon">💳</div>No payment activity yet</div>
+      </div>
+    </div>
+
+    <!-- Tab: Receipt -->
+    <div class="tab-content" id="tab-receipt">
+      <div class="tab-inner" id="receipt-content">
+        <div class="empty-state"><div class="icon">🧾</div>No completed orders yet</div>
+      </div>
+    </div>
+
+  </div><!-- /monitor-panel -->
+</div><!-- /workspace -->
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let es = null; // EventSource
+let running = false;
+let mcp_calls = [];
+let a2a_msgs = [];
+let mandate_data = null;
+let payment_data = null;
+let receipt_data = null;
+
+// ── Tab Switching ──────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector(`#tab-${name}`).classList.add('active');
+  event.currentTarget.classList.add('active');
+}
+
+// ── Health Check on Load ───────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/buyer/health');
+    const data = await r.json();
+
+    // Dots
+    dot('dot-gemini', data.gemini_mode === 'live');
+    dot('dot-razorpay', data.razorpay_mode === 'live');
+
+    // Config banner
+    if (data.missing_keys && data.missing_keys.length > 0) {
+      document.getElementById('config-banner').classList.add('show');
+      document.getElementById('banner-keys').textContent = data.missing_keys.join(', ');
+    }
+  } catch(e) {
+    dot('dot-gemini', false);
+    dot('dot-razorpay', false);
+  }
+  checkMerchant();
+}
+
+async function checkMerchant() {
+  try {
+    const r = await fetch('/api/buyer/merchant/card');
+    const data = await r.json();
+    const online = !!data.name;
+    dot('dot-merchant', online);
+    dot('merchant-dot', online);
+    document.getElementById('merchant-status-text').textContent =
+      online ? `Merchant: ${data.name}` : 'Merchant offline';
+  } catch(e) {
+    dot('dot-merchant', false);
+    dot('merchant-dot', false);
+    document.getElementById('merchant-status-text').textContent = 'Merchant offline';
+  }
+}
+
+function dot(id, green) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('green', green);
+  el.classList.toggle('red', !green);
+  el.classList.toggle('pulse', green);
+}
+
+// ── Pipeline ───────────────────────────────────────────────────────────────
+function startPipeline() {
+  const query = document.getElementById('query-input').value.trim();
+  const budget = parseFloat(document.getElementById('budget-input').value) || 2500;
+  if (!query) { document.getElementById('query-input').focus(); return; }
+  if (running) return;
+
+  running = true;
+  mcp_calls = []; a2a_msgs = []; mandate_data = null; payment_data = null; receipt_data = null;
+  setBuying(true);
+  clearLog();
+  resetTabs();
+
+  addChat('buyer', query);
+  addChat('system', `Starting autonomous purchase pipeline… budget: ₹${budget.toLocaleString('en-IN')}`);
+
+  const params = new URLSearchParams({ user_query: query, max_budget_inr: budget });
+
+  es = new EventSource(`/api/buyer/run?${params}`);
+
+  es.onmessage = function(e) {
+    try {
+      const ev = JSON.parse(e.data);
+      handleEvent(ev);
+    } catch(err) {}
+  };
+
+  es.onerror = function() {
+    if (running) {
+      addLog('ERROR', 'Stream disconnected', '');
+      finalize();
+    }
+  };
+}
+
+function handleEvent(ev) {
+  switch(ev.type) {
+    case 'CONFIG_ERROR':
+      addLog('CONFIG', 'Missing API keys', ev.missing_keys ? ev.missing_keys.join(', ') : '');
+      addChat('system', `⚠️ ${ev.message || 'Some API keys are missing. Running in demo mode.'}`);
+      document.getElementById('config-banner').classList.add('show');
+      if (ev.missing_keys) document.getElementById('banner-keys').textContent = ev.missing_keys.join(', ');
+      break;
+
+    case 'MERCHANT_STATUS':
+      addLog('SYSTEM', `Merchant agent ${ev.online ? 'ONLINE ●' : 'OFFLINE ○'}`, ev.url || '');
+      dot('dot-merchant', ev.online);
+      dot('merchant-dot', ev.online);
+      document.getElementById('merchant-status-text').textContent =
+        ev.online ? 'Merchant Online ●' : 'Merchant Offline ○';
+      break;
+
+    case 'SYSTEM':
+      addLog('SYSTEM', ev.message || '', '');
+      break;
+
+    case 'INTENT_PARSED':
+      addLog('INTENT', `Intent: ${ev.intent}`, `Budget: ₹${(ev.budget_inr||0).toLocaleString('en-IN')} · Category: ${ev.category || '—'}`);
+      addLog('USER', `"${ev.intent || ''}"`, `₹${(ev.budget_inr||0).toLocaleString('en-IN')} · ${ev.category || ''}`);
+      renderIntentTab(ev);
+      break;
+
+    case 'MANDATE_ISSUED':
+      addLog('MANDATE', 'AP2 Bounded Mandate issued', `ID: ${ev.mandate_id} · Limit: ₹${(ev.max_amount||0).toLocaleString('en-IN')} · Expires: ${ev.expires_at || '—'}`);
+      mandate_data = ev;
+      renderMandateTab(ev);
+      break;
+
+    case 'MCP_CALL':
+      addLog('MCP', `Tool call: ${ev.tool}`, JSON.stringify(ev.args||{}).substring(0, 160));
+      break;
+
+    case 'MCP_RESULT':
+      addLog('MCP', `Tool result: ${ev.tool}`, ev.result ? ev.result.substring(0, 220) : '');
+      mcp_calls.push(ev);
+      renderMCPTab();
+      break;
+
+    case 'A2A_SENT':
+      addLog('A2A', 'A2A SendMessageRequest → Merchant', ev.message ? ev.message.substring(0,140) : '');
+      break;
+
+    case 'A2A_RECEIVED':
+      addLog('A2A', `A2A Response: ${ev.state || ''}`, ev.reply ? ev.reply.substring(0,160) : '');
+      a2a_msgs.push(ev);
+      renderA2ATab();
+      break;
+
+    case 'COMMERCE_PIPELINE':
+
+      const step = ev.step || '';
+      const stepText = (ev.data && ev.data.text) ? ev.data.text : step;
+      const badge = getPipelineBadge(step);
+      addLog(badge, step.replace(/_/g,' '), stepText.replace(/^>\s*/,''));
+      if (step === 'RAZORPAY_ORDER' || step.includes('PAYMENT') || step.includes('ORDER') || step.includes('BOUNDING_RULE')) {
+        payment_data = ev.data || {};
+        renderPaymentTab();
+      }
+      if (step === 'STOCK_DEDUCTED') {
+        addLog('STOCK', 'Inventory Updated', (ev.data && ev.data.text) ? ev.data.text.replace(/^>\s*/,'') : '');
+      }
+      break;
+
+    case 'CHAT_MESSAGE':
+      addChat(ev.role === 'MERCHANT' ? 'merchant' : ev.role === 'BUYER' ? 'buyer' : 'system', ev.text || '');
+      break;
+
+    case 'COMPLETE':
+      receipt_data = ev.receipt;
+      addLog('COMPLETE', 'Transaction Confirmed ✓', `Session: ${ev.session_id || ''}`);
+      renderReceiptTab(ev);
+      addChatReceipt(ev.receipt);
+      finalize();
+      break;
+
+    case 'ERROR':
+      addLog('ERROR', ev.detail || 'Unknown error', '');
+      addChat('system', `❌ Error: ${ev.detail || 'Unknown error'}`);
+      finalize();
+      break;
+  }
+}
+
+function getPipelineBadge(step) {
+  if (step.includes('RAZORPAY') || step.includes('GATEWAY') || step.includes('TOKEN')) return 'RAZORPAY';
+  if (step.includes('MANDATE') || step.includes('BOUNDING')) return 'MANDATE';
+  if (step.includes('MCP') || step.includes('SEARCH') || step.includes('UPSELL') || step.includes('CATALOG')) return 'MCP';
+  if (step.includes('STOCK')) return 'STOCK';
+  if (step.includes('PAYMENT') || step.includes('ORDER')) return 'RAZORPAY';
+  return 'SYSTEM';
+}
+
+function finalize() {
+  running = false;
+  setBuying(false);
+  if (es) { es.close(); es = null; }
+}
+
+// ── Budget Breach Demo ─────────────────────────────────────────────────────
+function demobreach() {
+  // Sets up: "I need a laptop under ₹70k" but mandate is only ₹50k
+  // → AP2 engine will find laptop at ₹65k, upsell adds ₹2999 warranty = ₹67,999
+  // → But we set budget to ₹60k so cart (₹65k) EXCEEDS mandate → BLOCKED
+  document.getElementById('query-input').value = 'I need a developer laptop for programming';
+  document.getElementById('budget-input').value = '60000';
+  addChat('system',
+    '⛔ Demo: Budget Breach Mode\n' +
+    'Laptop = ₹65,000. Mandate limit = ₹60,000.\n' +
+    '₹65,000 > ₹60,000 → AP2 gate will BLOCK this transaction.'
+  );
+  addLog('DEMO', 'Budget Breach Demo loaded', 'Cart will exceed AP2 mandate limit → BLOCKED');
+  setTimeout(startPipeline, 800);
+}
+
+// ── Chat UI ────────────────────────────────────────────────────────────────
+function addChat(role, text) {
+  const thread = document.getElementById('chat-thread');
+  const div = document.createElement('div');
+  div.className = `chat-msg ${role.toLowerCase()}`;
+
+  const labels = { buyer: 'You (Buyer Agent)', merchant: 'Merchant Agent', system: '' };
+  const label = labels[role.toLowerCase()] || role;
+
+  div.innerHTML = `
+    ${label ? `<div class="chat-label">${label}</div>` : ''}
+    <div class="chat-bubble">${escHtml(text)}</div>
+  `;
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function addChatReceipt(r) {
+  if (!r) return;
+  const thread = document.getElementById('chat-thread');
+  const div = document.createElement('div');
+  div.className = 'chat-msg merchant';
+  div.innerHTML = `
+    <div class="chat-label">Order Receipt</div>
+    <div class="receipt-card">
+      <div class="receipt-title">✅ Order Confirmed</div>
+      <div class="receipt-row"><span class="label">Order ID</span><span class="val">${r.order_id||'—'}</span></div>
+      <div class="receipt-row"><span class="label">Payment ID</span><span class="val">${r.razorpay_payment_id||'—'}</span></div>
+      <hr/>
+      <div class="receipt-row"><span class="label">Amount Paid</span><span class="val green">₹${(r.total_paid_inr||0).toLocaleString('en-IN', {minimumFractionDigits:2})}</span></div>
+      <div class="receipt-row"><span class="label">Upsell Revenue</span><span class="val">₹${(r.upsell_revenue_gained_inr||0).toLocaleString('en-IN', {minimumFractionDigits:2})}</span></div>
+      <hr/>
+      <div class="receipt-row"><span class="label">Mandate</span><span class="val">${r.mandate_id||'—'}</span></div>
+      <div class="receipt-row"><span class="label">Audit Hash</span><span class="val" style="font-size:10px;word-break:break-all;">${(r.audit_hash_chain||'—').substring(0,32)}…</span></div>
+    </div>`;
+  thread.appendChild(div);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+// ── Audit Log ──────────────────────────────────────────────────────────────
+// Format: HH:MM:SS  [ACTOR]  Message  detail
+function addLog(type, msg, detail) {
+  const container = document.getElementById('log-container');
+  const now = new Date().toLocaleTimeString('en-IN', {hour12:false});
+  const badgeClass = `badge-${type.replace('INTENT','INTENT').replace('CONFIG','CONFIG')}`;
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `
+    <span class="log-time">${now}</span>
+    <span class="log-badge ${badgeClass}">${type}</span>
+    <span class="log-msg">${escHtml(msg)}${detail ? `<div class="detail">${escHtml(detail)}</div>` : ''}</span>
+  `;
+  container.appendChild(entry);
+  container.scrollTop = container.scrollHeight;
+}
+
+// ── Tab Renderers ──────────────────────────────────────────────────────────
+function renderIntentTab(ev) {
+  // Reuse mandate tab for intent display (shown on INTENT_PARSED)
+}
+
+function renderMandateTab(ev) {
+  const c = document.getElementById('mandate-content');
+  c.innerHTML = `
+    <div class="info-card">
+      <div class="info-card-header">AP2 Bounded Mandate — HMAC-SHA256</div>
+      <div class="info-card-body">
+        <div class="info-row"><span class="k">Mandate ID</span><span class="v blue">${ev.mandate_id||'—'}</span></div>
+        <div class="info-row"><span class="k">Max Budget</span><span class="v green">₹${(ev.max_amount||0).toLocaleString('en-IN', {minimumFractionDigits:2})}</span></div>
+        <div class="info-row"><span class="k">Authorized Merchant</span><span class="v">${ev.merchant||'—'}</span></div>
+        <div class="info-row"><span class="k">Expires At</span><span class="v orange">${ev.expires_at||'—'}</span></div>
+        <div class="info-row"><span class="k">Signature (preview)</span><span class="v" style="font-size:10px;">${ev.signature_preview||'—'}</span></div>
+        <div class="info-row"><span class="k">Algorithm</span><span class="v">HMAC-SHA256</span></div>
+        <div class="info-row"><span class="k">Status</span><span class="v green">● Issued & Active</span></div>
+      </div>
+    </div>`;
+}
+
+function renderMCPTab() {
+  const c = document.getElementById('mcp-content');
+  if (!mcp_calls.length) return;
+  c.innerHTML = mcp_calls.map(call => `
+    <div class="mcp-call-entry">
+      <div class="mcp-call-entry-header">
+        🛠 ${escHtml(call.tool||'')}
+        <span class="status-pill ${call.success ? 'pill-ok' : 'pill-err'}">${call.success ? 'OK' : 'ERR'}</span>
+      </div>
+      <div class="mcp-call-entry-body">${escHtml(call.result||'(no result)')}</div>
+    </div>`).join('');
+}
+
+function renderA2ATab() {
+  const c = document.getElementById('a2a-content');
+  if (!a2a_msgs.length) return;
+  c.innerHTML = a2a_msgs.map(msg => `
+    <div class="info-card">
+      <div class="info-card-header">A2A Task — ${escHtml(msg.state||'')}</div>
+      <div class="info-card-body">
+        <div class="info-row"><span class="k">Task ID</span><span class="v blue">${msg.task_id||'—'}</span></div>
+        <div class="info-row"><span class="k">State</span><span class="v green">${msg.state||'—'}</span></div>
+        <div class="info-row"><span class="k">Reply</span><span class="v" style="white-space:pre-wrap;">${escHtml(msg.reply||'—')}</span></div>
+      </div>
+    </div>`).join('');
+}
+
+function renderPaymentTab() {
+  if (!payment_data) return;
+  const c = document.getElementById('payment-content');
+  const rows = Object.entries(payment_data).map(([k,v]) =>
+    `<div class="info-row"><span class="k">${escHtml(k)}</span><span class="v">${escHtml(String(v))}</span></div>`
+  ).join('');
+  c.innerHTML = `
+    <div class="info-card">
+      <div class="info-card-header">Razorpay Payment Details</div>
+      <div class="info-card-body">${rows || '<div style="color:var(--muted)">No details yet</div>'}</div>
+    </div>`;
+}
+
+function renderReceiptTab(ev) {
+  const r = ev.receipt || {};
+  const c = document.getElementById('receipt-content');
+  c.innerHTML = `
+    <div class="info-card">
+      <div class="info-card-header">✅ Order Receipt — ${ev.session_id||''}</div>
+      <div class="info-card-body">
+        <div class="info-row"><span class="k">Order ID</span><span class="v blue">${r.order_id||'—'}</span></div>
+        <div class="info-row"><span class="k">Payment ID</span><span class="v purple">${r.razorpay_payment_id||'—'}</span></div>
+        <div class="info-row"><span class="k">Total Paid</span><span class="v green">₹${(r.total_paid_inr||0).toLocaleString('en-IN', {minimumFractionDigits:2})}</span></div>
+        <div class="info-row"><span class="k">Base Amount</span><span class="v">${r.cart?.base_subtotal_inr ? '₹'+r.cart.base_subtotal_inr.toLocaleString('en-IN') : '—'}</span></div>
+        <div class="info-row"><span class="k">Upsell Revenue</span><span class="v orange">₹${(r.upsell_revenue_gained_inr||0).toLocaleString('en-IN', {minimumFractionDigits:2})}</span></div>
+        <div class="info-row"><span class="k">Merchant Revenue</span><span class="v green">₹${(r.merchant_revenue_inr||0).toLocaleString('en-IN', {minimumFractionDigits:2})}</span></div>
+        <div class="info-row"><span class="k">Mandate ID</span><span class="v">${r.mandate_id||'—'}</span></div>
+        <div class="info-row"><span class="k">Buyer ID</span><span class="v">${r.buyer_id||'—'}</span></div>
+        <div class="info-row"><span class="k">Merchant ID</span><span class="v">${r.merchant_id||'—'}</span></div>
+        <div class="info-row"><span class="k">Audit Hash</span><span class="v" style="font-size:10px;word-break:break-all;">${r.audit_hash_chain||'—'}</span></div>
+      </div>
+    </div>
+    <div class="info-card">
+      <div class="info-card-header">Cart Items</div>
+      <div class="info-card-body">
+        ${(r.cart?.items||[]).map(item=>`<div class="info-row"><span class="k">${escHtml(item.name||'')}${item.is_upsell?' 🔼':''}</span><span class="v">₹${(item.price_inr||0).toLocaleString('en-IN')} × ${item.quantity||1}</span></div>`).join('') || '<div style="color:var(--muted)">No items</div>'}
+      </div>
+    </div>`;
+
+  // Auto-switch to receipt tab
+  setTimeout(() => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab-receipt').classList.add('active');
+    document.querySelectorAll('.tab-btn')[5].classList.add('active');
+  }, 500);
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function resetTabs() {
+  document.getElementById('a2a-content').innerHTML = '<div class="empty-state"><div class="icon">🔗</div>No A2A messages yet</div>';
+  document.getElementById('mcp-content').innerHTML = '<div class="empty-state"><div class="icon">🛠</div>No MCP tool calls yet</div>';
+  document.getElementById('mandate-content').innerHTML = '<div class="empty-state"><div class="icon">🔒</div>No mandate issued yet</div>';
+  document.getElementById('payment-content').innerHTML = '<div class="empty-state"><div class="icon">💳</div>No payment activity yet</div>';
+  document.getElementById('receipt-content').innerHTML = '<div class="empty-state"><div class="icon">🧾</div>No completed orders yet</div>';
+}
+
+function setBuying(on) {
+  document.getElementById('buy-btn').disabled = on;
+  document.getElementById('buy-btn-content').innerHTML = on
+    ? '<span class="spinner"></span> Processing…'
+    : 'Buy Now →';
+  document.getElementById('query-input').disabled = on;
+  document.getElementById('budget-input').disabled = on;
+}
+
+function resetSession() {
+  if (es) { es.close(); es = null; }
+  running = false;
+  setBuying(false);
+  document.getElementById('chat-thread').innerHTML = `
+    <div class="chat-msg system">
+      <div class="chat-bubble">Tell me what you want to buy. I'll find it, negotiate the best price, and complete the payment — autonomously.</div>
+    </div>`;
+  clearLog();
+  document.getElementById('log-container').innerHTML = '<div style="color:var(--muted);font-family:var(--mono);font-size:12px;padding:20px 8px;text-align:center;">Waiting for pipeline to start…</div>';
+  resetTabs();
+  mcp_calls = []; a2a_msgs = []; mandate_data = null; payment_data = null; receipt_data = null;
+}
+
+function escHtml(str) {
+  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Enter to submit
+document.addEventListener('DOMContentLoaded', () => {
+  checkHealth();
+  document.getElementById('query-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startPipeline(); }
+  });
+});
+</script>
+</body>
+</html>

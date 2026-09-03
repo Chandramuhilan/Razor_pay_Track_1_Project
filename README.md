@@ -1,137 +1,207 @@
-# 🚀 Revenue-Maximizing Merchant Agent & Safe Autonomous Commerce Protocol
+# 🚀 Agentic Commerce Platform — Track 01: AI Growth & Agentic Commerce
 
-> **Hackathon Track 01 — AI Growth & Agentic Commerce**: A focused Merchant Agent demonstrating revenue growth through dynamic value-add upsells, safe autonomous transactions using **AP2 Bounded Mandates**, real **Google A2A Protocol** (`a2a-sdk 1.1.2`), real **MCP** (`mcp 1.26.0`), **Razorpay Test Payment APIs**, and a **First-Class Immutable Cryptographic Audit Trail Ledger**.
-
----
-
-## 🏛️ Real Protocol Libraries (No Custom Wrappers)
-
-| Layer | Library | Version | What's Used |
-|:---|:---|:---|:---|
-| **Google A2A** | `a2a-sdk` | `1.1.2` | `AgentCard`, `AgentSkill`, `AgentCapabilities`, `AgentInterface`, `AgentProvider`, `Message`, `Part`, `Role`, `Task`, `TaskStatus`, `TaskState`, `SendMessageRequest`, `SendMessageResponse` — all real protobuf types |
-| **MCP** | `mcp` | `1.26.0` | `Tool`, `ToolAnnotations`, `TextContent`, `CallToolResult`, `ListToolsResult` — real Pydantic types serialized via `.model_dump()` |
-| **Razorpay** | `razorpay` | `2.0.1` | `razorpay.Client`, `.order.create()`, HMAC-SHA256 signature verification |
-| **AP2 Mandates** | `hmac`, `hashlib` | stdlib | HMAC-SHA256 signed bounded spending mandates |
-| **AI Buyer** | `google-genai` | `2.19.0` | `genai.Client`, `models.generate_content()` — Gemini 2.5 Flash for upsell reasoning |
-| **FastAPI + MCP Server** | `fastapi` + `mcp.server.fastmcp` | Latest | HTTP server + standalone MCP stdio/SSE server |
+> **Dual-agent autonomous commerce system**: A standalone **Buyer Agent** and a standalone **Merchant Agent** communicate via real Google A2A Protocol, real MCP tools, HMAC-SHA256 AP2 Bounded Mandates, Razorpay test-mode payments, and a cryptographic audit ledger.
 
 ---
 
-## 🌟 Track 01 Hackathon Protocol Mapping
-
-| Track 01 Requirement | Implementation | Protocol / Library |
-|:---|:---|:---|
-| **AI buyer ↔ merchant** | **Real A2A Protocol** | `a2a.types.SendMessageRequest/Response`, `AgentCard` at `/.well-known/agent.json` |
-| **Agent-readable merchant** | **Real MCP tools** | `mcp.types.Tool`, `CallToolResult`, `ListToolsResult` at `/mcp` |
-| **Checkout** | **UCP/ACP Transaction State Machine** | `CommerceStateMachine` with 10-state lifecycle |
-| **Payment** | **Razorpay Test APIs** | `razorpay.Client.order.create()`, HMAC-SHA256 verification |
-| **Agent authorization** | **AP2 Bounded Mandates** | HMAC-SHA256 signed mandates with budget + merchant + expiry bounds |
-| **Explainability** | **Cryptographic Audit Ledger** | SHA-256 hash-chained, SQLite-persisted audit trail |
-| **Failure handling** | **Graceful failure at 3 points** | Budget breach, tampered mandate, Razorpay error — all caught & logged |
-
----
-
-## 🛠️ Complete End-to-End Autonomous Journey
+## 🏗️ Architecture
 
 ```
-AI Buyer: "I need a laptop for programming under ₹70,000."
-              ↓
-[1] Issue AP2 Bounded Mandate (HMAC-SHA256, Max: ₹70,000)
-              ↓
-[2] A2A Message → Merchant Agent (real a2a.types.SendMessageRequest)
-              ↓
-[3] MCP tools/call: merchant_search_catalog
-    → TechPro DevBook 15 @ ₹65,000 (Vector Sim: 88.9%)
-              ↓
-[4] MCP tools/call: merchant_evaluate_upsell
-    → 2-Year Warranty @ ₹2,999 (Headroom: ₹5,000)
-              ↓
-[5] AP2 Mandate Validation: ₹67,999 ≤ ₹70,000 ✓ (Headroom: ₹2,001)
-              ↓
-[6] razorpay.Client.order.create() → order_xxx created
-              ↓
-[7] HMAC-SHA256 Payment Signature Verified ✓
-              ↓
-[8] Audit Ledger SHA-256 Hash Chain Finalized → SQLite
+┌──────────────────────────────────────────┐     ┌──────────────────────────────────────────┐
+│          BUYER AGENT  (port 8001)         │     │         MERCHANT AGENT  (port 8000)       │
+│  buyer_agent/                             │     │  main.py + app/                           │
+│                                           │     │                                           │
+│  ┌─────────────────────────────────────┐ │     │  /.well-known/agent.json  ← A2A Card     │
+│  │  Split-Screen UI (index.html)       │ │     │  /api/a2a/message         ← A2A endpoint  │
+│  │  Left:  Chat Console                │ │     │  /mcp                     ← MCP endpoint  │
+│  │  Right: Live Agent Monitor          │ │     │  /api/commerce/run-flow   ← Payment       │
+│  │  Tabs:  A2A│MCP│Mandate│Pay│Receipt │ │     │  /api/audit/ledger        ← Audit trail   │
+│  └─────────────────────────────────────┘ │     │  /api/catalog             ← UCP catalog   │
+│                                           │     │                                           │
+│  BuyerCore pipeline:                      │     │  Real Protocol Stack:                     │
+│    1. Gemini 2.5 Flash → parse intent     │────▶│  - a2a-sdk 1.1.2 (protobuf AgentCard)    │
+│    2. AP2 Mandate (HMAC-SHA256)           │ A2A │  - mcp 1.26.0 (Tool, CallToolResult)     │
+│    3. MCP search_catalog call             │────▶│  - razorpay 2.0.1 (Orders API)           │
+│    4. MCP evaluate_upsell call            │ MCP │  - Gemini text-embedding-004 (semantic)  │
+│    5. A2A SendMessageRequest              │────▶│  - SQLite hash-chain audit ledger        │
+│    6. /api/commerce/run-flow              │ REST│                                           │
+│    7. Stream COMPLETE + receipt           │◀────│                                           │
+└──────────────────────────────────────────┘     └──────────────────────────────────────────┘
 ```
 
 ---
 
-## 💻 Quick Start
+## ⚙️ Setup Guide
 
-### 1. Install Dependencies
+### Step 1 — Install Dependencies
+
 ```bash
-pip install fastapi uvicorn razorpay pydantic httpx pytest a2a-sdk mcp google-genai
+pip install -r requirements.txt
 ```
 
-### 2. Run the Web Dashboard
+### Step 2 — Get API Keys (Free)
+
+#### Gemini API Key (Required for real AI)
+1. Go to **https://aistudio.google.com/app/apikey**
+2. Sign in with your Google account
+3. Click **"Create API key"**
+4. Copy the key (starts with `AIzaSy...`)
+
+#### Razorpay Test Keys (Required for real payments)
+1. Go to **https://dashboard.razorpay.com**
+2. Sign up free (no real money involved in test mode)
+3. Go to **Settings → API Keys**
+4. Click **"Generate Test Key"**
+5. Copy **Key ID** (starts with `rzp_test_...`) and **Key Secret**
+
+### Step 3 — Configure `.env`
+
+Open `Razor_pay/.env` and fill in your keys:
+
+```env
+# Google AI — get from aistudio.google.com/app/apikey
+GEMINI_API_KEY=AIzaSy_your_key_here
+
+# Razorpay Test Mode — get from dashboard.razorpay.com → Settings → API Keys
+RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxxxxxxxx
+RAZORPAY_KEY_SECRET=your_secret_here
+
+# Agent URLs (leave as-is for local development)
+MERCHANT_AGENT_URL=http://localhost:8000
+BUYER_AGENT_URL=http://localhost:8001
+
+# AP2 Mandate crypto secret (change this in production)
+AP2_MANDATE_SECRET=AP2_MANDATE_SECRET_AUTHORIZATION_KEY_2026
+```
+
+> **Without keys**: Everything still runs in demo/simulated mode. The UI shows a warning banner explaining which keys are missing. All protocol structures (A2A, MCP, AP2) are real — only Razorpay API calls and Gemini AI reasoning are simulated.
+
+---
+
+## 🚀 Quick Start
+
+### Terminal 1 — Merchant Agent (port 8000)
+
 ```bash
+cd Razor_pay
 python main.py
 ```
-Open: `http://localhost:8000` | Swagger: `http://localhost:8000/docs`
 
-### 3. Run CLI Demo
+Open: http://localhost:8000 | Swagger: http://localhost:8000/docs
+
+### Terminal 2 — Buyer Agent (port 8001)
+
 ```bash
-python demo.py
+cd Razor_pay
+python buyer_agent/main.py
 ```
 
-### 4. Run Standalone MCP Server (stdio/SSE)
+Open: **http://localhost:8001** ← The buyer UI with split-screen interface
+
+### Terminal 3 — Standalone MCP Server (optional, for external LLM clients)
+
 ```bash
+cd Razor_pay
 python mcp_server.py
 ```
 
-### 5. Run Automated Tests
+### Run Tests
+
 ```bash
 python -m pytest tests/ -v
+# Expected: 22/22 passed ✅
 ```
-**Expected: 22/22 tests passed** ✅
 
 ---
 
-## 🔌 A2A Protocol Endpoints (real a2a-sdk protobuf types)
+## 🔌 Protocol Endpoints
+
+### Merchant Agent (port 8000)
+
+| Endpoint | Method | Protocol | Description |
+|:---|:---|:---|:---|
+| `/.well-known/agent.json` | GET | **A2A** | Real `a2a.types.AgentCard` protobuf |
+| `/api/a2a/message` | POST | **A2A** | Real `SendMessageRequest → Task → SendMessageResponse` |
+| `/mcp` | POST | **MCP** | JSON-RPC 2.0: `tools/list`, `tools/call` |
+| `/api/mcp/tools` | GET | **MCP** | `mcp.types.Tool[]` manifest |
+| `/api/catalog` | GET | **UCP** | Schema.org JSON-LD agent-readable catalog |
+| `/api/commerce/stream` | POST | **REST+SSE** | Full pipeline with live streaming |
+| `/api/commerce/run-flow` | POST | **REST** | Synchronous pipeline |
+| `/api/audit/ledger` | GET | **REST** | SHA-256 hash-chained audit trail |
+
+### Buyer Agent (port 8001)
 
 | Endpoint | Method | Description |
 |:---|:---|:---|
-| `/.well-known/agent.json` | GET | Real `a2a.types.AgentCard` protobuf → `MessageToDict` |
-| `/api/a2a/message` | POST | Real `SendMessageRequest` → `Task` lifecycle → `SendMessageResponse` |
+| `/` | GET | Split-screen buyer UI |
+| `/api/buyer/health` | GET | Key status + configuration check |
+| `/api/buyer/merchant/card` | GET | Fetches merchant's A2A AgentCard |
+| `/api/buyer/merchant/tools` | GET | Fetches merchant's MCP tools |
+| `/api/buyer/run` | GET | SSE pipeline stream (EventSource) |
+| `/api/buyer/a2a/send` | POST | Direct A2A message to merchant |
+| `/api/buyer/mcp/call` | POST | Direct MCP tool call |
 
-**Example A2A message:**
-```json
-POST /api/a2a/message
-{
-  "message": {
-    "role": 2,
-    "parts": [{"text": "I need a 65W GaN charger under ₹2500"}]
-  }
-}
+---
+
+## 📚 Real Protocol Libraries Used
+
+| Protocol | Library | Version | Types Used |
+|:---|:---|:---|:---|
+| Google A2A | `a2a-sdk` | `1.1.2` | `AgentCard`, `Message`, `Part`, `Task`, `TaskStatus`, `TaskState`, `SendMessageRequest/Response` |
+| MCP | `mcp` | `1.26.0` | `Tool`, `ToolAnnotations`, `TextContent`, `CallToolResult`, `ListToolsResult` |
+| Razorpay | `razorpay` | `2.0.1` | `Client.order.create()`, HMAC-SHA256 verification |
+| Google AI | `google-genai` | `2.19.0` | `Gemini 2.5 Flash`, `text-embedding-004` |
+| AP2 Mandates | stdlib `hmac` | — | HMAC-SHA256 signed bounded spending mandates |
+
+---
+
+## 🏆 Track 01 Bar Compliance
+
+| Requirement | Implementation |
+|:---|:---|
+| **Grow merchant revenue** | Dynamic upsell engine picks highest-margin add-on within AP2 mandate headroom |
+| **Sellable to AI buyers** | Real `AgentCard` + real MCP `Tool[]` + Schema.org UCP catalog |
+| **Every money action explainable** | SHA-256 hash-chained SQLite audit ledger at `GET /api/audit/ledger` |
+| **Bounded and gated** | HMAC-SHA256 AP2 Mandate required for every payment — budget/merchant/expiry enforced |
+| **Audit trail shown** | Full hash-chained event timeline with `integrity_verified: true` |
+| **Failures handled gracefully** | Tampered mandate (HTTP 400) · Budget breach (HTTP 400) · Merchant offline (UI banner) · Missing keys (UI banner + demo mode) |
+| **Razorpay test-mode APIs** | `razorpay==2.0.1` SDK, real `client.order.create()`, HMAC verification |
+| **Agent-to-agent commerce** | Real A2A HTTP calls from buyer → merchant using `a2a-sdk` protobuf types |
+
+---
+
+## 📁 Project Structure
+
 ```
-
----
-
-## 🔌 MCP Endpoints (real mcp.types Pydantic objects)
-
-| Endpoint | Method | Description |
-|:---|:---|:---|
-| `/mcp` | POST | JSON-RPC 2.0 dispatcher — `tools/list`, `tools/call` |
-| `/api/mcp/tools` | GET | Returns `mcp.types.Tool[]` via `.model_dump()` |
-
----
-
-## 🔑 Razorpay Test Mode
-
-Set environment variables for your own Razorpay test keys:
-```bash
-set RAZORPAY_KEY_ID=rzp_test_YourKeyHere
-set RAZORPAY_KEY_SECRET=YourSecretKeyHere
+Razor_pay/
+├── .env                          ← Your API keys (git-ignored)
+├── .env.example                  ← Template — copy to .env
+├── requirements.txt              ← Pinned production dependencies
+├── main.py                       ← Merchant Agent (port 8000)
+├── mcp_server.py                 ← Standalone FastMCP stdio server
+├── buyer_agent/                  ← Buyer Agent (port 8001)
+│   ├── main.py                   ← FastAPI entry point
+│   ├── models.py                 ← BuyerIntent, PurchaseRequest
+│   ├── static/index.html         ← Split-screen buyer UI
+│   └── agent/
+│       ├── buyer_core.py         ← Gemini-powered pipeline orchestrator
+│       ├── a2a_client.py         ← Real A2A HTTP client (a2a-sdk)
+│       ├── mcp_client.py         ← Real MCP HTTP client (mcp.types)
+│       └── ap2_mandate.py        ← Standalone HMAC-SHA256 mandate creation
+├── app/
+│   ├── config.py                 ← Pydantic-settings (loads .env)
+│   ├── models.py                 ← Core Pydantic data models
+│   ├── protocols/
+│   │   ├── a2a.py                ← Real a2a-sdk AgentCard + message handler
+│   │   ├── mcp_ucp.py            ← Real mcp.types Tool + CallToolResult
+│   │   └── ap2_mandate.py        ← HMAC-SHA256 mandate engine
+│   ├── merchant/
+│   │   ├── catalog.py            ← TF-IDF + Gemini embedding search
+│   │   └── upsell_engine.py      ← Revenue maximizer
+│   └── services/
+│       ├── embedding_service.py  ← Gemini text-embedding-004 + JSON cache
+│       ├── razorpay_service.py   ← Real Razorpay SDK integration
+│       ├── audit_ledger.py       ← SHA-256 hash-chain ledger
+│       └── database_ledger.py    ← SQLite persistence
+└── tests/                        ← 22 automated tests
 ```
-Without keys, the service uses a high-fidelity test mode with HMAC-verified simulated payments.
-
----
-
-## 🏆 Track 01 Differentiators
-
-1. **Real Protocol Libraries**: Uses `a2a-sdk 1.1.2` protobuf types and `mcp 1.26.0` Pydantic types — no custom wrapper classes.
-2. **Revenue Maximisation**: Evaluates AP2 mandate headroom to recommend highest-margin upsells (e.g. warranty at 80% margin).
-3. **Bounded & Gated**: Every money action requires a valid HMAC-SHA256 AP2 mandate — budget cap, merchant binding, category limits, expiry enforced.
-4. **Full Explainability**: Every agent action (search, upsell, mandate check, payment) SHA-256 hash-chained in SQLite audit ledger.
-5. **Three Graceful Failures**: Budget breach, tampered mandate signature, Razorpay gateway error — each caught, logged, and returned with structured error.

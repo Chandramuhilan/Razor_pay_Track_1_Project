@@ -78,7 +78,7 @@ async def stream_commerce_pipeline(
         session_id=session_id
     )
 
-    # Step 2: Vector Search Catalog
+    # Step 2: Structured Catalog Search
     state_machine.transition_to("DISCOVERED")
 
     if simulate_stock_out:
@@ -86,10 +86,34 @@ async def stream_commerce_pipeline(
         catalog.set_stock_status("prod_laptop_dev_65k", False)
 
     q = ProductQuery(query_text=user_query, max_budget_inr=effective_budget)
-    results, match_count, top_sim = catalog.vector_search_catalog(q)
+    results, match_count, search_meta = catalog.structured_search(q)
+    detected_cats = search_meta.get("detected_categories", [])
 
-    t_vec = {"type": "PANEL_B", "section": "VECTOR_SEARCH", "text": f"> Vector Search: {match_count} Catalog Matches Found (Top Sim: {top_sim * 100:.1f}%)"}
-    yield f"data: {json.dumps(t_vec)}\n\n"
+    audit_ledger.record_event(
+        actor="MERCHANT_AGENT",
+        state="CATALOG_SEARCH",
+        title="Structured Catalog Search Executed",
+        details={
+            "session_id": session_id,
+            "query": user_query,
+            "max_budget_inr": effective_budget,
+            "detected_categories": detected_cats,
+            "match_count": match_count,
+            "search_method": "structured_field_scoring",
+        },
+        session_id=session_id,
+    )
+
+    t_search = {
+        "type": "PANEL_B",
+        "section": "CATALOG_SEARCH",
+        "text": (
+            f"> Catalog Search: {match_count} matches | "
+            f"Category: {', '.join(detected_cats) if detected_cats else 'general'} | "
+            f"Budget filter: ≤₹{effective_budget:,.2f}"
+        ),
+    }
+    yield f"data: {json.dumps(t_search)}\n\n"
     await asyncio.sleep(0.2)
 
     t_bud = {"type": "PANEL_B", "section": "BUDGET_CONSTRAINT", "text": f"> Budget Constraint: Max ₹{effective_budget:,.2f}"}
@@ -280,6 +304,46 @@ async def stream_commerce_pipeline(
     state_machine.transition_to("ORDER_CONFIRMED")
 
     order_num = f"#ORD-{uuid.uuid4().hex[:4].upper()}"
+
+    # ── Auto stock deduction — runs immediately after payment captured ────
+    for item in cart.items:
+        try:
+            stock_info = catalog.deduct_stock(item.product_id, item.quantity)
+            audit_ledger.record_event(
+                actor="MERCHANT_AGENT",
+                state="STOCK_DEDUCTED",
+                title=f"Stock Deducted: {item.name}",
+                details={
+                    "session_id": session_id,
+                    "order_id": order_res.order_id,
+                    "product_id": item.product_id,
+                    "quantity_deducted": item.quantity,
+                    "stock_before": stock_info["stock_before"],
+                    "stock_after": stock_info["stock_after"],
+                    "still_in_stock": stock_info["still_in_stock"],
+                    "is_upsell_item": item.is_upsell,
+                },
+                session_id=session_id,
+            )
+            t_stock = {
+                "type": "PANEL_B",
+                "section": "STOCK_DEDUCTED",
+                "text": (
+                    f"> Stock Update: {item.name} | "
+                    f"qty={item.quantity} | "
+                    f"stock {stock_info['stock_before']} → {stock_info['stock_after']}"
+                ),
+            }
+            yield f"data: {json.dumps(t_stock)}\n\n"
+            await asyncio.sleep(0.1)
+        except ValueError as se:
+            audit_ledger.record_event(
+                actor="MERCHANT_AGENT",
+                state="STOCK_WARNING",
+                title=f"Stock Warning: {item.name}",
+                details={"session_id": session_id, "error": str(se)},
+                session_id=session_id,
+            )
 
     # Panel A Chat Line 4: Merchant Receipt Confirmation
     msg4 = {"type": "PANEL_A", "role": "MERCHANT", "speaker": "Merchant Agent", "text": f'"Payment of ₹{total_amount:,.2f} captured. Receipt sent. Order ID: {order_num}."'}
