@@ -509,7 +509,7 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
     telemetry_logs.append({"section": "RAZORPAY_ORDER", "text": f"> Razorpay Order Created: {order_res.order_id}"})
     telemetry_logs.append({"section": "TOKEN_VERIFICATION", "text": "> Token Verification: AP2 Signature Valid"})
 
-    payment_id, signature = razorpay_service.generate_simulated_payment(order_res.order_id)
+    payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     verification = PaymentVerification(
         razorpay_order_id=order_res.order_id,
         razorpay_payment_id=payment_id,

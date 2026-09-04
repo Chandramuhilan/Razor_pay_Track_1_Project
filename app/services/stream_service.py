@@ -286,7 +286,7 @@ async def stream_commerce_pipeline(
     yield f"data: {json.dumps(t_tok)}\n\n"
     await asyncio.sleep(0.2)
 
-    payment_id, signature = razorpay_service.generate_simulated_payment(order_res.order_id)
+    payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     verification = PaymentVerification(
         razorpay_order_id=order_res.order_id,
         razorpay_payment_id=payment_id,
