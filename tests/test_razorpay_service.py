@@ -28,3 +28,14 @@ def test_razorpay_order_creation_and_verification():
     )
 
     assert service.verify_payment_signature(verification) is True
+
+def test_live_payment_errors_do_not_fall_back_to_simulation(monkeypatch):
+    service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
+    service.client = object()
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("gateway unavailable")
+
+    monkeypatch.setattr("app.services.razorpay_service.requests.post", fail)
+    with pytest.raises(RuntimeError, match="Razorpay payment execution failed"):
+        service.execute_payment("order_real", 100)

@@ -441,7 +441,7 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
             accepted_upsell_product = upsell_offer.product
             state_machine.transition_to("UPSELL_ACCEPTED")
 
-    items = [CartItem(product_id=base_product.id, name=base_product.name, price_inr=base_product.price_inr, quantity=1)]
+    items = [CartItem(product_id=base_product.id, name=base_product.name, category=base_product.category, price_inr=base_product.price_inr, quantity=1)]
     upsell_subtotal = 0.0
 
     if upsell_accepted and accepted_upsell_product:
@@ -449,6 +449,7 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
             product_id=accepted_upsell_product.id,
             name=accepted_upsell_product.name,
             price_inr=accepted_upsell_product.price_inr,
+            category=accepted_upsell_product.category,
             quantity=1,
             is_upsell=True,
         ))
@@ -502,14 +503,39 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
     telemetry_logs.append({"section": "BOUNDING_RULE", "text": f"> Bounding Rule: Passed (Within Limit ₹{effective_budget:,.2f})"})
     chat_transcript.append({"speaker": "Buyer Agent", "role": "BUYER", "text": '"Authorized. Payment token dispatched."'})
 
-    order_res = razorpay_service.create_order(cart=cart, buyer_id=buyer.agent_id)
+    for item in cart.items:
+        product = catalog.get_product_by_id(item.product_id)
+        if not product or product.stock_quantity < item.quantity:
+            reason = f"Insufficient stock for '{item.name}'."
+            state_machine.fail(reason)
+            audit_ledger.record_event(
+                actor="MERCHANT_AGENT",
+                state="FAILED",
+                title="Inventory Check Rejected Checkout",
+                details={"session_id": session_id, "product_id": item.product_id, "reason": reason},
+                session_id=session_id,
+            )
+            raise HTTPException(status_code=409, detail=reason)
+
+    try:
+        order_res = razorpay_service.create_order(cart=cart, buyer_id=buyer.agent_id)
+        payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
+    except RuntimeError as payment_error:
+        state_machine.fail(str(payment_error))
+        audit_ledger.record_event(
+            actor="RAZORPAY_API",
+            state="FAILED",
+            title="Razorpay Payment Failed",
+            details={"session_id": session_id, "error": str(payment_error)},
+            session_id=session_id,
+        )
+        raise HTTPException(status_code=502, detail=str(payment_error)) from payment_error
     state_machine.transition_to("PAYMENT_CREATED")
 
     telemetry_logs.append({"section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH]"})
     telemetry_logs.append({"section": "RAZORPAY_ORDER", "text": f"> Razorpay Order Created: {order_res.order_id}"})
     telemetry_logs.append({"section": "TOKEN_VERIFICATION", "text": "> Token Verification: AP2 Signature Valid"})
 
-    payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     verification = PaymentVerification(
         razorpay_order_id=order_res.order_id,
         razorpay_payment_id=payment_id,

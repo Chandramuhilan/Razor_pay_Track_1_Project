@@ -43,13 +43,17 @@ class AuditLedgerEngine:
         seq = prev.sequence + 1
         ts = datetime.now(timezone.utc).isoformat()
 
+        event_details = dict(details)
+        audit_record_id = self.db_ledger.generate_audit_record_id(session_id, seq)
+        event_details["audit_record_id"] = audit_record_id
+
         event = AuditEvent(
             sequence=seq,
             timestamp=ts,
             state=state,
             actor=actor,
             title=title,
-            details=details,
+            details=event_details,
             prev_hash=prev.current_hash,
             current_hash=""
         )
@@ -63,11 +67,11 @@ class AuditLedgerEngine:
             actor=actor,
             state=state,
             title=title,
-            details=details,
+            details=event_details,
             prev_hash=prev.current_hash,
-            current_hash=event.current_hash
+            current_hash=event.current_hash,
+            audit_record_id=audit_record_id
         )
-        event.details["audit_record_id"] = audit_rec_id
 
         return event
 

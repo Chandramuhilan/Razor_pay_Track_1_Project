@@ -50,7 +50,10 @@ class AP2Mandate(BaseModel):
     user_id: str
     max_amount_inr: float
     authorized_merchant_id: str
-    allowed_categories: List[str] = Field(default_factory=lambda: ["electronics", "software", "warranty", "services"])
+    allowed_categories: List[str] = Field(default_factory=lambda: [
+        "charging", "laptops", "peripherals", "displays", "audio",
+        "electronics", "software", "warranty", "services", "accessories",
+    ])
     expires_at: str
     nonce: str = Field(default_factory=lambda: uuid.uuid4().hex)
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -72,6 +75,7 @@ class MandateValidationResult(BaseModel):
 class CartItem(BaseModel):
     product_id: str
     name: str
+    category: Optional[str] = None
     price_inr: float
     quantity: int = 1
     is_upsell: bool = False

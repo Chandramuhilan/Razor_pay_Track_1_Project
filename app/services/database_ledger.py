@@ -62,9 +62,10 @@ class DatabaseLedger:
         title: str,
         details: Dict[str, Any],
         prev_hash: str = "",
-        current_hash: str = ""
+        current_hash: str = "",
+        audit_record_id: Optional[str] = None
     ) -> str:
-        audit_rec_id = self.generate_audit_record_id(session_id, seq)
+        audit_rec_id = audit_record_id or self.generate_audit_record_id(session_id, seq)
         intent = details.get("intent", details.get("user_query", "Hardware Procurement"))
         vector_count = details.get("matched_count", details.get("vector_matches_count", 0))
         budget_max = details.get("max_budget_inr", details.get("authorized_max_inr", 0.0))

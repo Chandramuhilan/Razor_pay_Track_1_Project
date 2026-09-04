@@ -83,7 +83,8 @@ class RazorpayService:
                     created_at=res.get("created_at", int(time.time())),
                 )
             except Exception as e:
-                logger.warning("create_order API failed (%s) — using simulated order", e)
+                logger.error("create_order API failed: %s", e)
+                raise RuntimeError(f"Razorpay order creation failed: {e}") from e
 
         # Simulated fallback
         sim_id = f"order_sim_{uuid.uuid4().hex[:14]}"
@@ -170,11 +171,9 @@ class RazorpayService:
 
         except requests.HTTPError as e:
             err_body = e.response.text[:300] if e.response else str(e)
-            logger.warning("Razorpay payment API error: %s — falling back to simulation", err_body)
+            raise RuntimeError(f"Razorpay payment API error: {err_body}") from e
         except Exception as e:
-            logger.warning("execute_payment failed: %s — falling back to simulation", e)
-
-        return self._simulated_payment(order_id)
+            raise RuntimeError(f"Razorpay payment execution failed: {e}") from e
 
     # ── Legacy alias (used by stream_service + run-flow) ─────────────────────
 

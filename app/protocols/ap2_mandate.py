@@ -10,8 +10,9 @@ import json
 from datetime import datetime, timezone
 from typing import Tuple
 from app.models import AP2Mandate, AP2MandateSignature, MandateValidationResult, Cart
+from app.config import settings
 
-SECRET_KEY_FOR_MANDATES = "AP2_MANDATE_SECRET_AUTHORIZATION_KEY_2026"
+SECRET_KEY_FOR_MANDATES = settings.AP2_MANDATE_SECRET
 
 class AP2MandateEngine:
     @staticmethod
@@ -41,7 +42,10 @@ class AP2MandateEngine:
             expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
             
         if allowed_categories is None:
-            allowed_categories = ["electronics", "software", "warranty", "services"]
+            allowed_categories = [
+                "charging", "laptops", "peripherals", "displays", "audio",
+                "electronics", "software", "warranty", "services", "accessories",
+            ]
 
         mandate = AP2Mandate(
             buyer_agent_id=buyer_agent_id,
@@ -94,7 +98,13 @@ class AP2MandateEngine:
                     remaining_headroom_inr=0.0
                 )
         except Exception:
-            pass
+            return MandateValidationResult(
+                valid=False,
+                reason=f"Mandate expiry is invalid: {mandate.expires_at}.",
+                requested_amount_inr=cart.total_amount_inr,
+                max_allowed_inr=mandate.max_amount_inr,
+                remaining_headroom_inr=0.0
+            )
 
         # 3. Verify Authorized Merchant
         if mandate.authorized_merchant_id != "*" and mandate.authorized_merchant_id != merchant_id:
@@ -105,6 +115,16 @@ class AP2MandateEngine:
                 max_allowed_inr=mandate.max_amount_inr,
                 remaining_headroom_inr=0.0
             )
+
+        for item in cart.items:
+            if item.category and item.category not in mandate.allowed_categories:
+                return MandateValidationResult(
+                    valid=False,
+                    reason=f"Cart item category '{item.category}' is not allowed by this mandate.",
+                    requested_amount_inr=cart.total_amount_inr,
+                    max_allowed_inr=mandate.max_amount_inr,
+                    remaining_headroom_inr=0.0
+                )
 
         # 4. Verify Amount Limit
         requested_total = cart.total_amount_inr

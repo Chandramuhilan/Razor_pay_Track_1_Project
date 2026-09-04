@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     def gemini_mode(self) -> str:
         return "live" if self.is_gemini_configured() else "unavailable"
 
+    def ap2_secret(self) -> str:
+        return self.AP2_MANDATE_SECRET
+
 
 @lru_cache
 def get_settings() -> Settings:

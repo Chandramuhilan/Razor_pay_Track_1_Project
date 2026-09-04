@@ -160,6 +160,7 @@ async def stream_commerce_pipeline(
         CartItem(
             product_id=base_product.id,
             name=base_product.name,
+            category=base_product.category,
             price_inr=base_product.price_inr,
             quantity=1
         )
@@ -171,6 +172,7 @@ async def stream_commerce_pipeline(
             CartItem(
                 product_id=accepted_upsell_product.id,
                 name=accepted_upsell_product.name,
+                category=accepted_upsell_product.category,
                 price_inr=accepted_upsell_product.price_inr,
                 quantity=1,
                 is_upsell=True
@@ -255,6 +257,21 @@ async def stream_commerce_pipeline(
     yield f"data: {json.dumps(msg3)}\n\n"
     await asyncio.sleep(0.4)
 
+    for item in cart.items:
+        product = catalog.get_product_by_id(item.product_id)
+        if not product or product.stock_quantity < item.quantity:
+            reason = f"Insufficient stock for '{item.name}'."
+            state_machine.fail(reason)
+            audit_ledger.record_event(
+                actor="MERCHANT_AGENT",
+                state="FAILED",
+                title="Inventory Check Rejected Checkout",
+                details={"session_id": session_id, "product_id": item.product_id, "reason": reason},
+                session_id=session_id,
+            )
+            yield f"data: {json.dumps({'type': 'ERROR', 'detail': reason})}\n\n"
+            return
+
     # Step 6: Create Razorpay Order & Payment Verification
     if simulate_razorpay_error:
         state_machine.fail("Razorpay Gateway Connection Error (Simulated Failure)")
@@ -271,7 +288,19 @@ async def stream_commerce_pipeline(
         yield f"data: {json.dumps(err_gw)}\n\n"
         return
 
-    order_res = razorpay_service.create_order(cart=cart, buyer_id=buyer.agent_id)
+    try:
+        order_res = razorpay_service.create_order(cart=cart, buyer_id=buyer.agent_id)
+    except RuntimeError as payment_error:
+        state_machine.fail(str(payment_error))
+        audit_ledger.record_event(
+            actor="RAZORPAY_API",
+            state="FAILED",
+            title="Razorpay Order Creation Failed",
+            details={"session_id": session_id, "error": str(payment_error)},
+            session_id=session_id,
+        )
+        yield f"data: {json.dumps({'type': 'ERROR', 'detail': str(payment_error)})}\n\n"
+        return
     state_machine.transition_to("PAYMENT_CREATED")
 
     t_gw = {"type": "PANEL_B", "section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH]"}
@@ -286,7 +315,19 @@ async def stream_commerce_pipeline(
     yield f"data: {json.dumps(t_tok)}\n\n"
     await asyncio.sleep(0.2)
 
-    payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
+    try:
+        payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
+    except RuntimeError as payment_error:
+        state_machine.fail(str(payment_error))
+        audit_ledger.record_event(
+            actor="RAZORPAY_API",
+            state="FAILED",
+            title="Razorpay Payment Failed",
+            details={"session_id": session_id, "order_id": order_res.order_id, "error": str(payment_error)},
+            session_id=session_id,
+        )
+        yield f"data: {json.dumps({'type': 'ERROR', 'detail': str(payment_error)})}\n\n"
+        return
     verification = PaymentVerification(
         razorpay_order_id=order_res.order_id,
         razorpay_payment_id=payment_id,

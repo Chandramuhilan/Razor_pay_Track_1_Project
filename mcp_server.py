@@ -52,13 +52,13 @@ def checkout_tool(product_id: str, upsell_product_id: str = None, max_budget_inr
     if not base:
         return f"Error: Product '{product_id}' not found."
     
-    items = [CartItem(product_id=base.id, name=base.name, price_inr=base.price_inr)]
+    items = [CartItem(product_id=base.id, name=base.name, category=base.category, price_inr=base.price_inr)]
     upsell_subtotal = 0.0
 
     if upsell_product_id:
         upsell = catalog.get_product_by_id(upsell_product_id)
         if upsell:
-            items.append(CartItem(product_id=upsell.id, name=upsell.name, price_inr=upsell.price_inr, is_upsell=True))
+            items.append(CartItem(product_id=upsell.id, name=upsell.name, category=upsell.category, price_inr=upsell.price_inr, is_upsell=True))
             upsell_subtotal = upsell.price_inr
 
     total_amount = base.price_inr + upsell_subtotal
@@ -72,7 +72,7 @@ def checkout_tool(product_id: str, upsell_product_id: str = None, max_budget_inr
         return f"AP2 Bounded Mandate Verification FAILED: {val_res.reason}"
 
     order_res = razorpay_service.create_order(cart, buyer.agent_id)
-    pay_id, sig = razorpay_service.generate_simulated_payment(order_res.order_id)
+    pay_id, sig = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     
     return f"SUCCESS: Razorpay Order Created '{order_res.order_id}' | Payment ID '{pay_id}' | Total Settled ₹{cart.total_amount_inr:,.2f}."
 
