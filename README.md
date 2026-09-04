@@ -2,6 +2,70 @@
 
 > **Dual-agent autonomous commerce system**: A standalone **Buyer Agent** and a standalone **Merchant Agent** communicate via real Google A2A Protocol, real MCP tools, HMAC-SHA256 AP2 Bounded Mandates, Razorpay test-mode payments, and a cryptographic audit ledger.
 
+## The Story: From Autonomous Demo to Safe Prototype
+
+The original prototype could discover products, recommend an upsell, create a Razorpay test order, and show a convincing receipt. The difficult problem was not making the happy path look autonomous; it was proving that an AI could never turn a mistaken decision, a stale inventory record, or a network failure into an unbounded charge.
+
+Three safety gaps made that proof incomplete:
+
+1. The audit event was hashed before its database record ID was added, so the displayed ledger could fail its own integrity check.
+2. Inventory was deducted after payment. A race or stock-out could therefore leave a captured payment with no product.
+3. A real Razorpay API failure could fall back to a locally simulated payment and appear successful.
+
+The fixed prototype now treats safety checks as transaction gates. The AP2 mandate is signed with the configured secret, checked for signature, expiry, merchant, category, and amount, and inventory is checked before gateway dispatch. Live Razorpay errors are audited and returned as terminal failures; they are never converted into success. Audit IDs are included before hashing, so the hash chain remains verifiable.
+
+### What Was Solved
+
+The result is an end-to-end AI purchasing prototype with three visible guarantees:
+
+- **Allowance:** every checkout is bounded by an HMAC-SHA256 AP2 mandate.
+- **Receipts:** catalog decisions, mandate results, gateway events, inventory changes, and failures are recorded in a hash-chained SQLite ledger.
+- **Safety net:** offline merchants, invalid mandates, unavailable inventory, and gateway errors stop the flow and explain why no successful purchase was confirmed.
+
+The regression suite now contains **25 passing tests** in simulated mode. The local merchant agent has also been started and responds at `http://localhost:8000`.
+
+### Architecture Before the Fixes
+
+```mermaid
+flowchart LR
+	U[User request] --> B[Buyer Agent]
+	B --> M[Merchant Agent]
+	M --> C[Catalog and upsell]
+	C --> V[AP2 validation]
+	V --> R[Razorpay]
+	R --> P[Payment]
+	P --> S[Deduct stock]
+	S --> L[Audit ledger]
+	R -. API error .-> F[Simulated payment fallback]
+	S -. stock failure .-> W[Warning, but success could continue]
+	L -. mutate after hash .-> I[Integrity could fail]
+```
+
+In this version, payment happened before the final inventory check, gateway errors could look like successful simulated payments, and the hash covered a different event from the one displayed.
+
+### Architecture After the Fixes
+
+```mermaid
+flowchart LR
+	U[User request] --> B[Buyer Agent]
+	B --> D[Signed AP2 mandate]
+	D --> M[Merchant Agent]
+	M --> C[Catalog and upsell]
+	C --> G{Mandate gates}
+	G -->|signature, expiry, merchant, category, amount| I{Inventory available?}
+	G -->|reject| AF[Audited failure]
+	I -->|no| IF[Audited failure, no order]
+	I -->|yes| O[Create Razorpay order]
+	O --> P[Execute and verify payment]
+	P -->|gateway error| PF[Audited terminal failure]
+	P -->|verified| S[Deduct stock]
+	S --> R[Confirmed receipt]
+	R --> L[Hash-chained SQLite ledger]
+	L --> V[Integrity verified]
+```
+
+The important boundary is before `Create Razorpay order`: an invalid mandate or unavailable product cannot reach the payment gateway. Once a real gateway is configured, an API rejection is surfaced as failure rather than hidden by simulation.
+
 ---
 
 ## 🏗️ Architecture
@@ -149,7 +213,7 @@ python -m pytest tests/ -v
 |:---|:---|:---|:---|
 | Google A2A | `a2a-sdk` | `1.1.2` | `AgentCard`, `Message`, `Part`, `Task`, `TaskStatus`, `TaskState`, `SendMessageRequest/Response` |
 | MCP | `mcp` | `1.26.0` | `Tool`, `ToolAnnotations`, `TextContent`, `CallToolResult`, `ListToolsResult` |
-| Razorpay | `razorpay` | `2.0.1` | `Client.order.create()`, HMAC-SHA256 verification |
+| Razorpay | `razorpay` | `2.0.1` | Test-mode order creation, payment execution, HMAC-SHA256 verification; live API errors fail closed |
 | Google AI | `google-genai` | `2.19.0` | `Gemini 2.5 Flash`, `text-embedding-004` |
 | AP2 Mandates | stdlib `hmac` | — | HMAC-SHA256 signed bounded spending mandates |
 
@@ -164,7 +228,7 @@ python -m pytest tests/ -v
 | **Every money action explainable** | SHA-256 hash-chained SQLite audit ledger at `GET /api/audit/ledger` |
 | **Bounded and gated** | HMAC-SHA256 AP2 Mandate required for every payment — budget/merchant/expiry enforced |
 | **Audit trail shown** | Full hash-chained event timeline with `integrity_verified: true` |
-| **Failures handled gracefully** | Tampered mandate (HTTP 400) · Budget breach (HTTP 400) · Merchant offline (UI banner) · Missing keys (UI banner + demo mode) |
+| **Failures handled gracefully** | Tampered/expired/category-invalid mandate · Budget breach · Merchant offline · Out-of-stock checkout · Razorpay gateway failure · Missing keys/demo mode |
 | **Razorpay test-mode APIs** | `razorpay==2.0.1` SDK, real `client.order.create()`, HMAC verification |
 | **Agent-to-agent commerce** | Real A2A HTTP calls from buyer → merchant using `a2a-sdk` protobuf types |
 
