@@ -1,97 +1,72 @@
-# 🚀 Agentic Commerce Platform — Track 01: AI Growth & Agentic Commerce
+# Agentic Commerce Platform
 
-> **Dual-agent autonomous commerce system**: A standalone **Buyer Agent** and a standalone **Merchant Agent** communicate via real Google A2A Protocol, real MCP tools, HMAC-SHA256 AP2 Bounded Mandates, Razorpay test-mode payments, and a cryptographic audit ledger.
+This is my prototype for an AI buyer and a merchant agent working together. I started with a simple question: can a buyer agent find a product, negotiate an upsell, and complete a purchase without giving the agent unlimited control over money?
 
-## The Story: From Autonomous Demo to Safe Prototype
+The answer needs more than a chat window. The merchant has to expose products in a way an agent can read, the buyer needs a clear spending limit, and every important decision needs to be visible after the transaction.
 
-The original prototype could discover products, recommend an upsell, create a Razorpay test order, and show a convincing receipt. The difficult problem was not making the happy path look autonomous; it was proving that an AI could never turn a mistaken decision, a stale inventory record, or a network failure into an unbounded charge.
+![Initial idea and product direction](Documents/Problem.jpg)
 
-Three safety gaps made that proof incomplete:
+## What I Built
 
-1. The audit event was hashed before its database record ID was added, so the displayed ledger could fail its own integrity check.
-2. Inventory was deducted after payment. A race or stock-out could therefore leave a captured payment with no product.
-3. A real Razorpay API failure could fall back to a locally simulated payment and appear successful.
+There are two agents in the project:
 
-The fixed prototype now treats safety checks as transaction gates. The AP2 mandate is signed with the configured secret, checked for signature, expiry, merchant, category, and amount, and inventory is checked before gateway dispatch. Live Razorpay errors are audited and returned as terminal failures; they are never converted into success. Audit IDs are included before hashing, so the hash chain remains verifiable.
+- The **Buyer Agent** understands the request, creates a bounded AP2 mandate, searches the merchant catalog, and evaluates an upsell.
+- The **Merchant Agent** exposes the catalog through MCP and UCP, communicates through A2A, checks the mandate, creates a Razorpay test order, and records the result.
 
-### What Was Solved
+The original idea also included a campaign orchestrator. I kept the first working version focused on the part that is easiest to demonstrate honestly: agent-readable discovery, upselling, and a guarded checkout.
 
-The result is an end-to-end AI purchasing prototype with three visible guarantees:
+![The constraints and expected outcome](<Documents/Constraints%20and%20Needs.jpg>)
 
-- **Allowance:** every checkout is bounded by an HMAC-SHA256 AP2 mandate.
-- **Receipts:** catalog decisions, mandate results, gateway events, inventory changes, and failures are recorded in a hash-chained SQLite ledger.
-- **Safety net:** offline merchants, invalid mandates, unavailable inventory, and gateway errors stop the flow and explain why no successful purchase was confirmed.
+## How I Approached It
 
-The regression suite now contains **25 passing tests** in simulated mode. The local merchant agent has also been started and responds at `http://localhost:8000`.
+I broke the flow into small decisions instead of letting one model call do everything:
 
-### Architecture Before the Fixes
+1. Discover a product from the buyer's request.
+2. Recommend an add-on only when it fits the spending limit.
+3. Sign and validate an AP2 mandate.
+4. Check stock before sending anything to Razorpay.
+5. Use Razorpay Standard Checkout for real test-mode authorization.
+6. Confirm the order only after the payment is verified and captured.
+7. Write the decisions and failures to a hash-chained SQLite ledger.
+
+![Implementation plan](Documents/Plan.jpg)
+
+## What I Fixed During Development
+
+The first version looked good on the happy path, but testing exposed three problems:
+
+- The audit record was changed after its hash was calculated.
+- A stock failure could happen after payment.
+- A Razorpay API error could look like a successful simulated payment.
+
+I fixed those at the control points. The ledger now hashes the final event, inventory is checked before order creation, and live Razorpay errors fail closed. The checkout path uses Razorpay's supported browser flow, verifies the returned signature, checks the payment status, and only then updates stock and confirms the order.
+
+![System architecture sketch](Documents/Architecture.jpg)
+
+## Architecture After the Fix
 
 ```mermaid
 flowchart LR
-	U[User request] --> B[Buyer Agent]
-	B --> M[Merchant Agent]
-	M --> C[Catalog and upsell]
-	C --> V[AP2 validation]
-	V --> R[Razorpay]
-	R --> P[Payment]
-	P --> S[Deduct stock]
-	S --> L[Audit ledger]
-	R -. API error .-> F[Simulated payment fallback]
-	S -. stock failure .-> W[Warning, but success could continue]
-	L -. mutate after hash .-> I[Integrity could fail]
+    U[Buyer request] --> B[Buyer Agent]
+    B --> A[AP2 signed mandate]
+    A --> M[Merchant Agent]
+    M --> C[MCP/UCP catalog]
+    C --> G[Upsell and cart]
+    G --> V[Mandate validation]
+    V --> I[Inventory check]
+    I --> O[Razorpay test order]
+    O --> R[Standard Checkout]
+    R --> S[Signature and payment status]
+    S --> P[Capture and order confirmation]
+    P --> L[Hash-chained audit ledger]
+    V -. reject .-> F[Audited failure]
+    I -. unavailable .-> F
+    R -. declined or cancelled .-> F
 ```
 
-In this version, payment happened before the final inventory check, gateway errors could look like successful simulated payments, and the hash covered a different event from the one displayed.
+The important rule is simple: a failed check stops the flow. The system does not invent a payment, and it does not report an order as complete just because an order ID exists.
 
-### Architecture After the Fixes
-
-```mermaid
-flowchart LR
-	U[User request] --> B[Buyer Agent]
-	B --> D[Signed AP2 mandate]
-	D --> M[Merchant Agent]
-	M --> C[Catalog and upsell]
-	C --> G{Mandate gates}
-	G -->|signature, expiry, merchant, category, amount| I{Inventory available?}
-	G -->|reject| AF[Audited failure]
-	I -->|no| IF[Audited failure, no order]
-	I -->|yes| O[Create Razorpay order]
-	O --> P[Execute and verify payment]
-	P -->|gateway error| PF[Audited terminal failure]
-	P -->|verified| S[Deduct stock]
-	S --> R[Confirmed receipt]
-	R --> L[Hash-chained SQLite ledger]
-	L --> V[Integrity verified]
-```
-
-The important boundary is before `Create Razorpay order`: an invalid mandate or unavailable product cannot reach the payment gateway. Once a real gateway is configured, an API rejection is surfaced as failure rather than hidden by simulation.
-
----
-
-## 🏗️ Architecture
-
-```
-┌──────────────────────────────────────────┐     ┌──────────────────────────────────────────┐
-│          BUYER AGENT  (port 8001)         │     │         MERCHANT AGENT  (port 8000)       │
-│  buyer_agent/                             │     │  main.py + app/                           │
-│                                           │     │                                           │
-│  ┌─────────────────────────────────────┐ │     │  /.well-known/agent.json  ← A2A Card     │
-│  │  Split-Screen UI (index.html)       │ │     │  /api/a2a/message         ← A2A endpoint  │
-│  │  Left:  Chat Console                │ │     │  /mcp                     ← MCP endpoint  │
-│  │  Right: Live Agent Monitor          │ │     │  /api/commerce/run-flow   ← Payment       │
-│  │  Tabs:  A2A│MCP│Mandate│Pay│Receipt │ │     │  /api/audit/ledger        ← Audit trail   │
-│  └─────────────────────────────────────┘ │     │  /api/catalog             ← UCP catalog   │
-│                                           │     │                                           │
-│  BuyerCore pipeline:                      │     │  Real Protocol Stack:                     │
-│    1. Gemini 2.5 Flash → parse intent     │────▶│  - a2a-sdk 1.1.2 (protobuf AgentCard)    │
-│    2. AP2 Mandate (HMAC-SHA256)           │ A2A │  - mcp 1.26.0 (Tool, CallToolResult)     │
-│    3. MCP search_catalog call             │────▶│  - razorpay 2.0.1 (Orders API)           │
-│    4. MCP evaluate_upsell call            │ MCP │  - Gemini text-embedding-004 (semantic)  │
-│    5. A2A SendMessageRequest              │────▶│  - SQLite hash-chain audit ledger        │
-│    6. /api/commerce/run-flow              │ REST│                                           │
-│    7. Stream COMPLETE + receipt           │◀────│                                           │
-└──────────────────────────────────────────┘     └──────────────────────────────────────────┘
-```
+The test suite currently passes **28 tests**. With Razorpay test keys configured, the server creates real test orders and opens Standard Checkout; the final order is confirmed only when Razorpay reports a captured payment.
 
 ---
 
@@ -106,12 +81,14 @@ pip install -r requirements.txt
 ### Step 2 — Get API Keys (Free)
 
 #### Gemini API Key (Required for real AI)
+
 1. Go to **https://aistudio.google.com/app/apikey**
 2. Sign in with your Google account
 3. Click **"Create API key"**
 4. Copy the key (starts with `AIzaSy...`)
 
 #### Razorpay Test Keys (Required for real payments)
+
 1. Go to **https://dashboard.razorpay.com**
 2. Sign up free (no real money involved in test mode)
 3. Go to **Settings → API Keys**
@@ -173,7 +150,7 @@ python mcp_server.py
 
 ```bash
 python -m pytest tests/ -v
-# Expected: 22/22 passed ✅
+# Expected: 28/28 passed
 ```
 
 ---
@@ -182,55 +159,55 @@ python -m pytest tests/ -v
 
 ### Merchant Agent (port 8000)
 
-| Endpoint | Method | Protocol | Description |
-|:---|:---|:---|:---|
-| `/.well-known/agent.json` | GET | **A2A** | Real `a2a.types.AgentCard` protobuf |
-| `/api/a2a/message` | POST | **A2A** | Real `SendMessageRequest → Task → SendMessageResponse` |
-| `/mcp` | POST | **MCP** | JSON-RPC 2.0: `tools/list`, `tools/call` |
-| `/api/mcp/tools` | GET | **MCP** | `mcp.types.Tool[]` manifest |
-| `/api/catalog` | GET | **UCP** | Schema.org JSON-LD agent-readable catalog |
-| `/api/commerce/stream` | POST | **REST+SSE** | Full pipeline with live streaming |
-| `/api/commerce/run-flow` | POST | **REST** | Synchronous pipeline |
-| `/api/audit/ledger` | GET | **REST** | SHA-256 hash-chained audit trail |
+| Endpoint                    | Method | Protocol           | Description                                               |
+| :-------------------------- | :----- | :----------------- | :-------------------------------------------------------- |
+| `/.well-known/agent.json` | GET    | **A2A**      | Real`a2a.types.AgentCard` protobuf                      |
+| `/api/a2a/message`        | POST   | **A2A**      | Real`SendMessageRequest → Task → SendMessageResponse` |
+| `/mcp`                    | POST   | **MCP**      | JSON-RPC 2.0:`tools/list`, `tools/call`               |
+| `/api/mcp/tools`          | GET    | **MCP**      | `mcp.types.Tool[]` manifest                             |
+| `/api/catalog`            | GET    | **UCP**      | Schema.org JSON-LD agent-readable catalog                 |
+| `/api/commerce/stream`    | POST   | **REST+SSE** | Full pipeline with live streaming                         |
+| `/api/commerce/run-flow`  | POST   | **REST**     | Synchronous pipeline                                      |
+| `/api/audit/ledger`       | GET    | **REST**     | SHA-256 hash-chained audit trail                          |
 
 ### Buyer Agent (port 8001)
 
-| Endpoint | Method | Description |
-|:---|:---|:---|
-| `/` | GET | Split-screen buyer UI |
-| `/api/buyer/health` | GET | Key status + configuration check |
-| `/api/buyer/merchant/card` | GET | Fetches merchant's A2A AgentCard |
-| `/api/buyer/merchant/tools` | GET | Fetches merchant's MCP tools |
-| `/api/buyer/run` | GET | SSE pipeline stream (EventSource) |
-| `/api/buyer/a2a/send` | POST | Direct A2A message to merchant |
-| `/api/buyer/mcp/call` | POST | Direct MCP tool call |
+| Endpoint                      | Method | Description                       |
+| :---------------------------- | :----- | :-------------------------------- |
+| `/`                         | GET    | Split-screen buyer UI             |
+| `/api/buyer/health`         | GET    | Key status + configuration check  |
+| `/api/buyer/merchant/card`  | GET    | Fetches merchant's A2A AgentCard  |
+| `/api/buyer/merchant/tools` | GET    | Fetches merchant's MCP tools      |
+| `/api/buyer/run`            | GET    | SSE pipeline stream (EventSource) |
+| `/api/buyer/a2a/send`       | POST   | Direct A2A message to merchant    |
+| `/api/buyer/mcp/call`       | POST   | Direct MCP tool call              |
 
 ---
 
 ## 📚 Real Protocol Libraries Used
 
-| Protocol | Library | Version | Types Used |
-|:---|:---|:---|:---|
-| Google A2A | `a2a-sdk` | `1.1.2` | `AgentCard`, `Message`, `Part`, `Task`, `TaskStatus`, `TaskState`, `SendMessageRequest/Response` |
-| MCP | `mcp` | `1.26.0` | `Tool`, `ToolAnnotations`, `TextContent`, `CallToolResult`, `ListToolsResult` |
-| Razorpay | `razorpay` | `2.0.1` | Test-mode order creation, payment execution, HMAC-SHA256 verification; live API errors fail closed |
-| Google AI | `google-genai` | `2.19.0` | `Gemini 2.5 Flash`, `text-embedding-004` |
-| AP2 Mandates | stdlib `hmac` | — | HMAC-SHA256 signed bounded spending mandates |
+| Protocol     | Library          | Version    | Types Used                                                                                                     |
+| :----------- | :--------------- | :--------- | :------------------------------------------------------------------------------------------------------------- |
+| Google A2A   | `a2a-sdk`      | `1.1.2`  | `AgentCard`, `Message`, `Part`, `Task`, `TaskStatus`, `TaskState`, `SendMessageRequest/Response` |
+| MCP          | `mcp`          | `1.26.0` | `Tool`, `ToolAnnotations`, `TextContent`, `CallToolResult`, `ListToolsResult`                        |
+| Razorpay     | `razorpay`     | `2.0.1`  | Test-mode order creation, payment execution, HMAC-SHA256 verification; live API errors fail closed             |
+| Google AI    | `google-genai` | `2.19.0` | `Gemini 2.5 Flash`, `text-embedding-004`                                                                   |
+| AP2 Mandates | stdlib`hmac`   | —         | HMAC-SHA256 signed bounded spending mandates                                                                   |
 
 ---
 
 ## 🏆 Track 01 Bar Compliance
 
-| Requirement | Implementation |
-|:---|:---|
-| **Grow merchant revenue** | Dynamic upsell engine picks highest-margin add-on within AP2 mandate headroom |
-| **Sellable to AI buyers** | Real `AgentCard` + real MCP `Tool[]` + Schema.org UCP catalog |
-| **Every money action explainable** | SHA-256 hash-chained SQLite audit ledger at `GET /api/audit/ledger` |
-| **Bounded and gated** | HMAC-SHA256 AP2 Mandate required for every payment — budget/merchant/expiry enforced |
-| **Audit trail shown** | Full hash-chained event timeline with `integrity_verified: true` |
-| **Failures handled gracefully** | Tampered/expired/category-invalid mandate · Budget breach · Merchant offline · Out-of-stock checkout · Razorpay gateway failure · Missing keys/demo mode |
-| **Razorpay test-mode APIs** | `razorpay==2.0.1` SDK, real `client.order.create()`, HMAC verification |
-| **Agent-to-agent commerce** | Real A2A HTTP calls from buyer → merchant using `a2a-sdk` protobuf types |
+| Requirement                              | Implementation                                                                                                                                                |
+| :--------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Grow merchant revenue**          | Dynamic upsell engine picks highest-margin add-on within AP2 mandate headroom                                                                                 |
+| **Sellable to AI buyers**          | Real`AgentCard` + real MCP `Tool[]` + Schema.org UCP catalog                                                                                              |
+| **Every money action explainable** | SHA-256 hash-chained SQLite audit ledger at`GET /api/audit/ledger`                                                                                          |
+| **Bounded and gated**              | HMAC-SHA256 AP2 Mandate required for every payment — budget/merchant/expiry enforced                                                                         |
+| **Audit trail shown**              | Full hash-chained event timeline with`integrity_verified: true`                                                                                             |
+| **Failures handled gracefully**    | Tampered/expired/category-invalid mandate · Budget breach · Merchant offline · Out-of-stock checkout · Razorpay gateway failure · Missing keys/demo mode |
+| **Razorpay test-mode APIs**        | `razorpay==2.0.1` SDK, real `client.order.create()`, HMAC verification                                                                                    |
+| **Agent-to-agent commerce**        | Real A2A HTTP calls from buyer → merchant using`a2a-sdk` protobuf types                                                                                    |
 
 ---
 
