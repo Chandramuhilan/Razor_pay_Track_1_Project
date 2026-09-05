@@ -519,7 +519,6 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
 
     try:
         order_res = razorpay_service.create_order(cart=cart, buyer_id=buyer.agent_id)
-        payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     except RuntimeError as payment_error:
         state_machine.fail(str(payment_error))
         audit_ledger.record_event(
@@ -532,6 +531,24 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
         raise HTTPException(status_code=502, detail=str(payment_error)) from payment_error
     state_machine.transition_to("PAYMENT_CREATED")
 
+    if razorpay_service.client:
+        razorpay_service.register_checkout(order_res, {
+            "session_id": session_id,
+            "cart": cart,
+            "amount_paise": order_res.amount_paise,
+        })
+        audit_ledger.record_event(
+            actor="RAZORPAY_API", state="PAYMENT_CREATED", title="Razorpay Checkout Awaiting Customer Authorization",
+            details={"session_id": session_id, "order_id": order_res.order_id, "amount_paise": order_res.amount_paise},
+            session_id=session_id,
+        )
+        return {
+            "status": "PENDING_CHECKOUT",
+            "session_id": session_id,
+            "razorpay": razorpay_service.checkout_options(order_res),
+            "message": "Open Razorpay Checkout and complete the test payment. Use success@razorpay for UPI.",
+        }
+
     telemetry_logs.append({"section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH]"})
     telemetry_logs.append({"section": "RAZORPAY_ORDER", "text": f"> Razorpay Order Created: {order_res.order_id}"})
     telemetry_logs.append({"section": "TOKEN_VERIFICATION", "text": "> Token Verification: AP2 Signature Valid"})
@@ -542,7 +559,7 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
         razorpay_signature=signature,
     )
 
-    is_sig_valid = razorpay_service.verify_payment_signature(verification)
+    is_sig_valid = razorpay_service.verify_checkout_payment(verification)
     if not is_sig_valid:
         state_machine.fail("Payment HMAC signature verification failed")
         raise HTTPException(status_code=400, detail="Razorpay Payment Verification Failed.")
@@ -657,6 +674,59 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
             "additional_revenue_inr": upsell_subtotal,
         },
     }
+
+
+@app.post("/api/razorpay/verify", tags=["Commerce Pipeline"])
+def verify_razorpay_checkout(payload: Dict[str, Any]):
+    """Verifies the three values returned by Razorpay Standard Checkout."""
+    verification = PaymentVerification(
+        razorpay_order_id=payload.get("razorpay_order_id", ""),
+        razorpay_payment_id=payload.get("razorpay_payment_id", ""),
+        razorpay_signature=payload.get("razorpay_signature", ""),
+    )
+    if not razorpay_service.verify_checkout_payment(verification):
+        audit_ledger.record_event("RAZORPAY_API", "FAILED", "Razorpay Checkout Signature Rejected", {"order_id": verification.razorpay_order_id})
+        raise HTTPException(status_code=400, detail="Razorpay Checkout signature verification failed.")
+    context = razorpay_service.pending_checkouts.get(verification.razorpay_order_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Checkout session not found or already finalized.")
+    try:
+        payment = razorpay_service.get_payment_status(
+            verification.razorpay_payment_id,
+            context["amount_paise"],
+        )
+    except Exception as payment_error:
+        audit_ledger.record_event("RAZORPAY_API", "FAILED", "Razorpay Payment Not Captured", {"order_id": verification.razorpay_order_id, "payment_id": verification.razorpay_payment_id, "error": str(payment_error)})
+        raise HTTPException(status_code=409, detail=str(payment_error)) from payment_error
+
+    for item in context["cart"].items:
+        try:
+            stock_info = catalog.deduct_stock(item.product_id, item.quantity)
+            audit_ledger.record_event("MERCHANT_AGENT", "STOCK_DEDUCTED", f"Stock Deducted: {item.name}", {"order_id": verification.razorpay_order_id, "product_id": item.product_id, **stock_info}, session_id=context["session_id"])
+        except ValueError as stock_error:
+            audit_ledger.record_event("MERCHANT_AGENT", "FAILED", "Stock Finalization Failed After Payment", {"order_id": verification.razorpay_order_id, "error": str(stock_error)}, session_id=context["session_id"])
+            raise HTTPException(status_code=409, detail="Payment captured but inventory finalization failed; contact support.") from stock_error
+
+    final_event = audit_ledger.record_event("MERCHANT_AGENT", "ORDER_CONFIRMED", "Razorpay Checkout Payment Captured", {"session_id": context["session_id"], "order_id": verification.razorpay_order_id, "razorpay_payment_id": verification.razorpay_payment_id, "total_amount_inr": context["cart"].total_amount_inr, "valid": True}, session_id=context["session_id"])
+    del razorpay_service.pending_checkouts[verification.razorpay_order_id]
+    return {"status": "PAYMENT_VERIFIED", "order_id": verification.razorpay_order_id, "payment_id": verification.razorpay_payment_id, "audit_record_id": final_event.details.get("audit_record_id")}
+
+
+@app.post("/api/razorpay/failure", tags=["Commerce Pipeline"])
+def record_razorpay_failure(payload: Dict[str, Any]):
+    """Persists a Checkout failure without treating it as a transaction."""
+    details = {
+        key: payload.get(key)
+        for key in ("order_id", "code", "description", "reason", "source", "step")
+        if payload.get(key)
+    }
+    audit_ledger.record_event(
+        actor="RAZORPAY_API",
+        state="FAILED",
+        title="Razorpay Checkout Payment Failed",
+        details=details,
+    )
+    return {"status": "PAYMENT_FAILED_RECORDED"}
 
 
 # ── Static Files & Dashboard ─────────────────────────────────────────────────

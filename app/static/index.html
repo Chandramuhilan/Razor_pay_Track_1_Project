@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Dynamic Merchant Agent Engine | Real-Time Split-Screen Demo</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
@@ -374,16 +375,68 @@
         loadDatabaseLedger();
 
       } else if (event.type === 'ERROR') {
+        const isGatewayError = event.source === 'RAZORPAY_API' || event.detail.startsWith('Razorpay payment failed');
+        const errorTitle = isGatewayError ? 'Razorpay Payment Declined' : 'Bounding Rule Violation';
         panelA.innerHTML += `
           <div class="p-3.5 rounded-xl bg-red-950/80 border border-red-800 text-red-200 text-xs space-y-1">
-            <p class="font-bold text-red-400"><i class="fa-solid fa-ban"></i> Bounding Rule Violation</p>
+            <p class="font-bold text-red-400"><i class="fa-solid fa-ban"></i> ${errorTitle}</p>
             <p class="term-font">${event.detail}</p>
           </div>
         `;
-        sessionBadge.textContent = '[STATUS: RULE BLOCKED]';
+        sessionBadge.textContent = isGatewayError ? '[STATUS: PAYMENT DECLINED]' : '[STATUS: RULE BLOCKED]';
         sessionBadge.className = 'text-[11px] font-mono text-red-400 bg-red-950 px-2.5 py-0.5 rounded-full border border-red-800 font-bold';
-        document.getElementById('chatStatus').textContent = 'Rule Blocked';
+        document.getElementById('chatStatus').textContent = isGatewayError ? 'Payment Declined' : 'Rule Blocked';
         loadDatabaseLedger();
+      } else if (event.type === 'CHECKOUT_REQUIRED') {
+        if (window.activeCheckout) {
+          return;
+        }
+        let paymentFailed = false;
+        const checkout = new Razorpay({
+          ...event.order,
+          handler: async function (response) {
+            const verify = await fetch('/api/razorpay/verify', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(response)
+            });
+            const result = await verify.json();
+            handleStreamEvent(verify.ok
+              ? {type: 'PANEL_B', section: 'TRANSACTION_STATUS', text: '> Razorpay Checkout signature verified.'}
+              : {type: 'ERROR', detail: result.detail || 'Checkout verification failed.'});
+          },
+          modal: {ondismiss: function () {
+            if (!paymentFailed) {
+              handleStreamEvent({type: 'ERROR', detail: 'Razorpay Checkout was cancelled. No payment was confirmed.'});
+            }
+          }}
+        });
+        window.activeCheckout = checkout;
+        checkout.on('payment.failed', async function (response) {
+          if (paymentFailed) {
+            return;
+          }
+          paymentFailed = true;
+          const error = response.error || {};
+          await fetch('/api/razorpay/failure', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+              order_id: error.metadata && error.metadata.order_id,
+              code: error.code,
+              description: error.description,
+              reason: error.reason,
+              source: error.source,
+              step: error.step
+            })
+          });
+          handleStreamEvent({
+            type: 'ERROR',
+            source: 'RAZORPAY_API',
+            detail: `Razorpay payment failed [${error.code || 'UNKNOWN'}]: ${error.description || error.reason || 'Authorization was declined.'} Try UPI with success@razorpay or another Razorpay test card.`
+          });
+        });
+        checkout.open();
       }
     }
 

@@ -303,6 +303,20 @@ async def stream_commerce_pipeline(
         return
     state_machine.transition_to("PAYMENT_CREATED")
 
+    if razorpay_service.client:
+        razorpay_service.register_checkout(order_res, {
+            "session_id": session_id,
+            "cart": cart,
+            "amount_paise": order_res.amount_paise,
+        })
+        audit_ledger.record_event(
+            actor="RAZORPAY_API", state="PAYMENT_CREATED", title="Razorpay Checkout Awaiting Customer Authorization",
+            details={"session_id": session_id, "order_id": order_res.order_id, "amount_paise": order_res.amount_paise},
+            session_id=session_id,
+        )
+        yield f"data: {json.dumps({'type': 'CHECKOUT_REQUIRED', 'order': razorpay_service.checkout_options(order_res), 'message': 'Complete Razorpay Checkout. Use success@razorpay for UPI.'})}\n\n"
+        return
+
     t_gw = {"type": "PANEL_B", "section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH]"}
     yield f"data: {json.dumps(t_gw)}\n\n"
     await asyncio.sleep(0.2)

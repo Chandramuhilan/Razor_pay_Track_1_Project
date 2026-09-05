@@ -3,9 +3,8 @@ Razorpay Payment API Integration Service — Real Test Mode.
 
 With real keys set in .env:
   1. create_order()          → Real POST /v1/orders      → real order_id on dashboard
-  2. execute_payment()       → Real POST /v1/payments/create/json via UPI success@razorpay
-                               → real pay_xxx captured on dashboard
-  3. verify_payment_signature() → Real HMAC-SHA256 verify using key_secret
+    2. checkout_options()       → Browser Standard Checkout configuration
+    3. verify_checkout_payment() → SDK HMAC-SHA256 verification
 
 Without keys (demo mode):
   All three steps produce locally-signed simulated data. Tests pass.
@@ -17,7 +16,6 @@ import hashlib
 import time
 import uuid
 import logging
-import requests
 import razorpay
 from typing import Tuple
 from app.models import Cart, RazorpayOrderResponse, PaymentVerification
@@ -31,6 +29,7 @@ class RazorpayService:
         self.key_id = key_id or settings.RAZORPAY_KEY_ID
         self.key_secret = key_secret or settings.RAZORPAY_KEY_SECRET
         self.client = None
+        self.pending_checkouts = {}
         self._init_client()
 
     def _init_client(self):
@@ -70,6 +69,7 @@ class RazorpayService:
                     "amount": amount_paise,
                     "currency": "INR",
                     "receipt": receipt_id,
+                    "payment_capture": 1,
                     "notes": notes,
                 })
                 logger.info("Razorpay order created: %s  ₹%.2f", res["id"], cart.total_amount_inr)
@@ -98,19 +98,79 @@ class RazorpayService:
             created_at=int(time.time()),
         )
 
-    # ── Real Payment Execution ────────────────────────────────────────────────
+    # ── Standard Checkout ─────────────────────────────────────────────────────
+
+    def checkout_options(self, order: RazorpayOrderResponse, name: str = "TechVerse Systems") -> dict:
+        """Builds the browser Checkout configuration for a server-created order."""
+        if not self.client:
+            raise RuntimeError("Razorpay Checkout requires configured test keys")
+        return {
+            "key": self.key_id,
+            "amount": order.amount_paise,
+            "currency": order.currency,
+            "name": name,
+            "description": "Agentic Commerce purchase",
+            "order_id": order.order_id,
+            "method": {
+                "card": True,
+                "upi": True,
+                "netbanking": True,
+                "wallet": True,
+            },
+            "prefill": {"email": "aibuyer@agentcommerce.test", "contact": "9999999999"},
+            "notes": {"test_upi": "success@razorpay"},
+        }
+
+    def verify_checkout_payment(self, verification: PaymentVerification) -> bool:
+        """Verifies the signature returned by Razorpay Standard Checkout."""
+        if self.client:
+            try:
+                self.client.utility.verify_payment_signature({
+                    "razorpay_order_id": verification.razorpay_order_id,
+                    "razorpay_payment_id": verification.razorpay_payment_id,
+                    "razorpay_signature": verification.razorpay_signature,
+                })
+                return True
+            except Exception:
+                return False
+        return self.verify_payment_signature(verification)
+
+    def register_checkout(self, order: RazorpayOrderResponse, context: dict) -> None:
+        """Keeps the validated cart context until Checkout returns its callback."""
+        self.pending_checkouts[order.order_id] = context
+
+    def get_payment_status(self, payment_id: str, amount_paise: int) -> dict:
+        """Fetches and, when necessary, captures a verified Checkout payment."""
+        if not self.client:
+            return {"status": "captured", "captured": True}
+        payment = None
+        for attempt in range(5):
+            payment = self.client.payment.fetch(payment_id)
+            status = payment.get("status")
+            if status == "authorized":
+                payment = self.client.payment.capture(
+                    payment_id,
+                    amount_paise,
+                    {"currency": payment.get("currency", "INR")},
+                )
+                break
+            if status == "captured":
+                break
+            if status in {"failed", "refunded"}:
+                break
+            if attempt < 4:
+                time.sleep(1)
+        if payment.get("status") != "captured" or not payment.get("captured", False):
+            raise RuntimeError(f"Razorpay payment is not captured (status={payment.get('status')}).")
+        return payment
+
+    # ── Legacy direct payment API ────────────────────────────────────────────
 
     def execute_payment(self, order_id: str, amount_paise: int) -> Tuple[str, str]:
         """
-        Executes a real Razorpay payment in test mode using UPI (success@razorpay).
-
-        Flow:
-          1. POST /v1/payments/create/json  → creates payment (pay_xxx)
-          2. POST /v1/payments/{id}/capture → captures it
-          3. Generates real HMAC-SHA256 signature using key_secret
-
-        This is the correct way for autonomous agent payments — no browser/checkout needed.
-        Uses Razorpay's designated test UPI VPA: success@razorpay (auto-succeeds in test mode).
+                Generates a simulated payment only in demo mode. Live payments must use
+                Standard Checkout because Razorpay does not expose a server-side
+                `/v1/payments/create/json` endpoint for this flow.
         """
         if not self.client or not self.key_id or not self.key_secret:
             return self._simulated_payment(order_id)
@@ -119,73 +179,17 @@ class RazorpayService:
         if order_id.startswith("order_sim_"):
             return self._simulated_payment(order_id)
 
-        try:
-            # Step 1 — Create payment using Razorpay's JSON payment API
-            payment_payload = {
-                "amount": amount_paise,
-                "currency": "INR",
-                "order_id": order_id,
-                "email": "aibuyer@agentcommerce.test",
-                "contact": "9999999999",
-                "notes": {
-                    "agent": "AI Buyer Agent",
-                    "protocol": "A2A+AP2",
-                },
-                "description": "Agentic Commerce — AI Buyer Agent Transaction",
-                "method": "upi",
-                "upi": {
-                    "vpa": "success@razorpay",  # Razorpay's test VPA — auto-succeeds
-                },
-            }
+        raise RuntimeError(
+            "Live Razorpay payments require Standard Checkout. "
+            "Create an order, open Checkout, then verify its callback."
+        )
 
-            response = requests.post(
-                "https://api.razorpay.com/v1/payments/create/json",
-                json=payment_payload,
-                auth=(self.key_id, self.key_secret),
-                timeout=15,
-            )
-            response.raise_for_status()
-            pay_data = response.json()
-
-            payment_id = pay_data.get("razorpay_payment_id") or pay_data.get("id")
-            if not payment_id:
-                logger.warning("No payment_id in response: %s", pay_data)
-                return self._simulated_payment(order_id)
-
-            logger.info("Razorpay payment created: %s", payment_id)
-
-            # Step 2 — Capture the payment
-            try:
-                self.client.payment.capture(payment_id, {
-                    "amount": amount_paise,
-                    "currency": "INR",
-                })
-                logger.info("Razorpay payment captured: %s", payment_id)
-            except Exception as cap_err:
-                # Payment might already be captured or in authorized state — OK
-                logger.info("Capture note: %s (payment may already be authorized)", cap_err)
-
-            # Step 3 — Generate real HMAC signature
-            signature = self._generate_hmac(order_id, payment_id)
-            return payment_id, signature
-
-        except requests.HTTPError as e:
-            err_body = e.response.text[:300] if e.response else str(e)
-            raise RuntimeError(f"Razorpay payment API error: {err_body}") from e
-        except Exception as e:
-            raise RuntimeError(f"Razorpay payment execution failed: {e}") from e
-
-    # ── Legacy alias (used by stream_service + run-flow) ─────────────────────
+    # ── Demo compatibility helper ────────────────────────────────────────────
 
     def generate_simulated_payment(self, order_id: str) -> Tuple[str, str]:
         """
-        Calls execute_payment() which tries the real API first.
-        Falls back to a locally-signed simulated payment only if real API fails.
-        Kept for backward compatibility with existing callers.
+        Generates a local payment token for simulated demo mode only.
         """
-        # Need amount_paise — derive from order if we can, else default to 0 (captured will fail gracefully)
-        # Callers that have the cart should use execute_payment(order_id, amount_paise) directly.
-        # For callers that only have order_id, we simulate (they don't have amount context).
         return self._simulated_payment(order_id)
 
     # ── Signature Helpers ─────────────────────────────────────────────────────

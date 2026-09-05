@@ -5,6 +5,7 @@ Integration tests for FastAPI endpoints and complete end-to-end commerce flow.
 import pytest
 from fastapi.testclient import TestClient
 from main import app
+from app.config import settings
 
 client = TestClient(app)
 
@@ -30,10 +31,14 @@ def test_run_autonomous_flow_success():
     response = client.post("/api/commerce/run-flow", json=payload)
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "SUCCESS"
-    assert data["cart"]["total_amount_inr"] == 67999.0
-    assert data["upsell_details"]["accepted"] is True
-    assert data["receipt"]["order_id"] is not None
+    if settings.is_razorpay_configured():
+        assert data["status"] == "PENDING_CHECKOUT"
+        assert data["razorpay"]["order_id"].startswith("order_")
+    else:
+        assert data["status"] == "SUCCESS"
+        assert data["cart"]["total_amount_inr"] == 67999.0
+        assert data["upsell_details"]["accepted"] is True
+        assert data["receipt"]["order_id"] is not None
 
 def test_run_autonomous_flow_budget_too_low():
     # Budget of 50 INR, below all catalog items -> 404 No Products Found
@@ -43,3 +48,13 @@ def test_run_autonomous_flow_budget_too_low():
     }
     response = client.post("/api/commerce/run-flow", json=payload)
     assert response.status_code == 404
+
+def test_razorpay_failure_is_recorded_without_success():
+    response = client.post("/api/razorpay/failure", json={
+        "order_id": "order_test_failure",
+        "code": "BAD_REQUEST_ERROR",
+        "description": "Authentication failed",
+        "reason": "authentication_failed",
+    })
+    assert response.status_code == 200
+    assert response.json()["status"] == "PAYMENT_FAILED_RECORDED"

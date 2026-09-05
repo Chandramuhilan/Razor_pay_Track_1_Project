@@ -33,9 +33,50 @@ def test_live_payment_errors_do_not_fall_back_to_simulation(monkeypatch):
     service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
     service.client = object()
 
-    def fail(*args, **kwargs):
-        raise RuntimeError("gateway unavailable")
-
-    monkeypatch.setattr("app.services.razorpay_service.requests.post", fail)
-    with pytest.raises(RuntimeError, match="Razorpay payment execution failed"):
+    with pytest.raises(RuntimeError, match="Standard Checkout"):
         service.execute_payment("order_real", 100)
+
+def test_authorized_payment_uses_sdk_capture_amount_position():
+    class FakePayment:
+        def __init__(self):
+            self.capture_args = None
+
+        def fetch(self, payment_id):
+            assert payment_id == "pay_authorized"
+            return {"status": "authorized", "currency": "INR"}
+
+        def capture(self, *args):
+            self.capture_args = args
+            return {"status": "captured", "captured": True, "currency": "INR"}
+
+    class FakeClient:
+        def __init__(self):
+            self.payment = FakePayment()
+
+    service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
+    service.client = FakeClient()
+    result = service.get_payment_status("pay_authorized", 299800)
+    assert result["status"] == "captured"
+    assert service.client.payment.capture_args == (
+        "pay_authorized", 299800, {"currency": "INR"}
+    )
+
+def test_order_requests_automatic_capture(monkeypatch):
+    class FakeOrders:
+        def __init__(self):
+            self.data = None
+
+        def create(self, data):
+            self.data = data
+            return {"id": "order_auto", "amount": data["amount"], "currency": "INR", "status": "created"}
+
+    class FakeClient:
+        def __init__(self):
+            self.order = FakeOrders()
+
+    service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
+    fake_client = FakeClient()
+    service.client = fake_client
+    cart = Cart(items=[CartItem(product_id="p", name="Item", price_inr=10)], total_amount_inr=10)
+    service.create_order(cart, "buyer")
+    assert fake_client.order.data["payment_capture"] == 1
