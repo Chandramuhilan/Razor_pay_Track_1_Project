@@ -303,21 +303,7 @@ async def stream_commerce_pipeline(
         return
     state_machine.transition_to("PAYMENT_CREATED")
 
-    if razorpay_service.client:
-        razorpay_service.register_checkout(order_res, {
-            "session_id": session_id,
-            "cart": cart,
-            "amount_paise": order_res.amount_paise,
-        })
-        audit_ledger.record_event(
-            actor="RAZORPAY_API", state="PAYMENT_CREATED", title="Razorpay Checkout Awaiting Customer Authorization",
-            details={"session_id": session_id, "order_id": order_res.order_id, "amount_paise": order_res.amount_paise},
-            session_id=session_id,
-        )
-        yield f"data: {json.dumps({'type': 'CHECKOUT_REQUIRED', 'order': razorpay_service.checkout_options(order_res), 'message': 'Complete Razorpay Checkout. Use success@razorpay for UPI.'})}\n\n"
-        return
-
-    t_gw = {"type": "PANEL_B", "section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH]"}
+    t_gw = {"type": "PANEL_B", "section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH — Autonomous Payment]"}
     yield f"data: {json.dumps(t_gw)}\n\n"
     await asyncio.sleep(0.2)
 
@@ -325,10 +311,12 @@ async def stream_commerce_pipeline(
     yield f"data: {json.dumps(t_rzp)}\n\n"
     await asyncio.sleep(0.2)
 
-    t_tok = {"type": "PANEL_B", "section": "TOKEN_VERIFICATION", "text": "> Token Verification: AP2 Signature Valid"}
+    t_tok = {"type": "PANEL_B", "section": "TOKEN_VERIFICATION", "text": "> AP2 Mandate Signature Valid — Dispatching Payment"}
     yield f"data: {json.dumps(t_tok)}\n\n"
     await asyncio.sleep(0.2)
 
+    # Execute real payment via Razorpay API (success@razorpay UPI in test mode)
+    # or simulate locally if keys not configured
     try:
         payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     except RuntimeError as payment_error:
@@ -342,6 +330,7 @@ async def stream_commerce_pipeline(
         )
         yield f"data: {json.dumps({'type': 'ERROR', 'detail': str(payment_error)})}\n\n"
         return
+
     verification = PaymentVerification(
         razorpay_order_id=order_res.order_id,
         razorpay_payment_id=payment_id,

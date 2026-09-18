@@ -42,7 +42,9 @@ class MCPClient:
             return text_result, is_error
 
     async def search_catalog(self, query: str, budget: float) -> tuple[str, bool]:
-        return await self.call_tool("search_catalog", {"query": query, "budget": budget})
-        
+        return await self.call_tool("merchant_search_catalog", {"query": query, "max_budget_inr": budget})
+
     async def evaluate_upsell(self, product_id: str, mandate_limit: float) -> tuple[str, bool]:
-        return await self.call_tool("evaluate_upsell", {"product_id": product_id, "mandate_limit": mandate_limit})
+        return await self.call_tool("merchant_evaluate_upsell", {"product_id": product_id, "current_mandate_limit": mandate_limit})
+
+

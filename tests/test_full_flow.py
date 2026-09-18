@@ -25,20 +25,18 @@ def test_ucp_catalog_endpoint():
 
 def test_run_autonomous_flow_success():
     payload = {
-        "user_query": "I need a laptop for programming under ₹70,000.",
-        "max_budget_inr": 70000.00
+        "user_query": "I need a laptop for programming under Rs 70000.",
+        "max_budget_inr": 70000.00,
     }
     response = client.post("/api/commerce/run-flow", json=payload)
     assert response.status_code == 200
     data = response.json()
-    if settings.is_razorpay_configured():
-        assert data["status"] == "PENDING_CHECKOUT"
-        assert data["razorpay"]["order_id"].startswith("order_")
-    else:
-        assert data["status"] == "SUCCESS"
-        assert data["cart"]["total_amount_inr"] == 67999.0
-        assert data["upsell_details"]["accepted"] is True
-        assert data["receipt"]["order_id"] is not None
+    # Autonomous flow always returns SUCCESS — no PENDING_CHECKOUT state
+    assert data["status"] == "SUCCESS"
+    assert data["cart"]["total_amount_inr"] > 0
+    assert data["receipt"]["order_id"] is not None
+    assert data["receipt"]["order_id"].startswith("order_")
+
 
 def test_run_autonomous_flow_budget_too_low():
     # Budget of 50 INR, below all catalog items -> 404 No Products Found

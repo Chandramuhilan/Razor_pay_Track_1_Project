@@ -169,11 +169,11 @@ class BuyerCore:
         # Extract top product ID from search result for upsell call
         # Catalog uses consistent product IDs — pick first match by category
         product_id_map = {
-            "charging": "prod_charger_65w_gan",
-            "laptops": "prod_laptop_devbook15",
-            "peripherals": "prod_mouse_ergo_pro",
-            "displays": "prod_monitor_4k_usbc",
-            "audio": "prod_earbuds_anc_pro",
+            "charging":    "prod_charger_65w_gan",
+            "laptops":     "prod_laptop_dev_65k",
+            "peripherals": "prod_mouse_ergo_3k",
+            "displays":    "prod_monitor_4k_35k",
+            "audio":       "prod_headphones_anc_12k",
             "electronics": "prod_charger_65w_gan",
         }
         top_product_id = product_id_map.get(intent["category"], "prod_charger_65w_gan")

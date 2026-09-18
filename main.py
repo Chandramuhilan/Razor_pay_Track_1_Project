@@ -531,27 +531,23 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
         raise HTTPException(status_code=502, detail=str(payment_error)) from payment_error
     state_machine.transition_to("PAYMENT_CREATED")
 
-    if razorpay_service.client:
-        razorpay_service.register_checkout(order_res, {
-            "session_id": session_id,
-            "cart": cart,
-            "amount_paise": order_res.amount_paise,
-        })
+    telemetry_logs.append({"section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH — Autonomous Payment]"})
+    telemetry_logs.append({"section": "RAZORPAY_ORDER", "text": f"> Razorpay Order Created: {order_res.order_id}"})
+    telemetry_logs.append({"section": "TOKEN_VERIFICATION", "text": "> AP2 Mandate Signature Valid — Dispatching Payment"})
+
+    # Execute real payment (hits Razorpay API in test mode) or simulate locally
+    try:
+        payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
+    except RuntimeError as payment_error:
+        state_machine.fail(str(payment_error))
         audit_ledger.record_event(
-            actor="RAZORPAY_API", state="PAYMENT_CREATED", title="Razorpay Checkout Awaiting Customer Authorization",
-            details={"session_id": session_id, "order_id": order_res.order_id, "amount_paise": order_res.amount_paise},
+            actor="RAZORPAY_API",
+            state="FAILED",
+            title="Razorpay Payment Failed",
+            details={"session_id": session_id, "error": str(payment_error)},
             session_id=session_id,
         )
-        return {
-            "status": "PENDING_CHECKOUT",
-            "session_id": session_id,
-            "razorpay": razorpay_service.checkout_options(order_res),
-            "message": "Open Razorpay Checkout and complete the test payment. Use success@razorpay for UPI.",
-        }
-
-    telemetry_logs.append({"section": "GATEWAY_DISPATCH", "text": "[GATEWAY DISPATCH]"})
-    telemetry_logs.append({"section": "RAZORPAY_ORDER", "text": f"> Razorpay Order Created: {order_res.order_id}"})
-    telemetry_logs.append({"section": "TOKEN_VERIFICATION", "text": "> Token Verification: AP2 Signature Valid"})
+        raise HTTPException(status_code=502, detail=str(payment_error)) from payment_error
 
     verification = PaymentVerification(
         razorpay_order_id=order_res.order_id,
@@ -559,10 +555,11 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
         razorpay_signature=signature,
     )
 
-    is_sig_valid = razorpay_service.verify_checkout_payment(verification)
+    is_sig_valid = razorpay_service.verify_payment_signature(verification)
     if not is_sig_valid:
         state_machine.fail("Payment HMAC signature verification failed")
         raise HTTPException(status_code=400, detail="Razorpay Payment Verification Failed.")
+
 
     state_machine.transition_to("PAYMENT_SUCCESS")
     state_machine.transition_to("ORDER_CONFIRMED")
