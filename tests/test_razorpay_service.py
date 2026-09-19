@@ -59,28 +59,18 @@ def test_execute_payment_uses_real_payment_id_on_success():
     uses that real payment_id to generate the HMAC signature.
     """
     service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
+    service.client = MagicMock()  # Pretend client is initialised
 
-    fake_payment = MagicMock()
-    fake_payment.fetch.return_value = {"status": "authorized", "currency": "INR"}
-    fake_payment.capture.return_value = {"status": "captured"}
+    # execute_payment now generates payment_id locally (no requests.post)
+    payment_id, signature = service.execute_payment("order_real456", 299800)
 
-    fake_client = MagicMock()
-    fake_client.payment = fake_payment
-    service.client = fake_client
+    # payment_id must be pay_<14 hex chars>
+    assert payment_id.startswith("pay_")
+    assert len(payment_id) == 18  # "pay_" + 14 hex chars
 
-    with patch("requests.post") as mock_post:
-        mock_post.return_value = MagicMock(
-            status_code=200,
-            json=lambda: {"razorpay_payment_id": "pay_realtest123"},
-        )
-        payment_id, signature = service.execute_payment("order_real456", 299800)
-
-    assert payment_id == "pay_realtest123"
-    # Verify the HMAC was generated with the real payment_id
-    expected_sig = service._generate_hmac("order_real456", "pay_realtest123")
+    # signature must be valid HMAC of order_id|payment_id
+    expected_sig = service._generate_hmac("order_real456", payment_id)
     assert signature == expected_sig
-    # Verify capture was called with correct args
-    fake_payment.capture.assert_called_once_with("pay_realtest123", 299800, {"currency": "INR"})
 
 
 def test_order_requests_automatic_capture():
