@@ -86,7 +86,11 @@ async def stream_commerce_pipeline(
         catalog.set_stock_status("prod_laptop_dev_65k", False)
 
     q = ProductQuery(query_text=user_query, max_budget_inr=effective_budget)
-    results, match_count, search_meta = catalog.structured_search(q)
+    try:
+        results, match_count, search_meta = catalog.search_for_agent(q)
+    except RuntimeError:
+        yield f"data: {json.dumps({'type': 'ERROR', 'detail': 'Amazon product source is temporarily unavailable.'})}\n\n"
+        return
     detected_cats = search_meta.get("detected_categories", [])
 
     audit_ledger.record_event(
@@ -317,6 +321,16 @@ async def stream_commerce_pipeline(
 
     # Execute real payment via Razorpay API (success@razorpay UPI in test mode)
     # or simulate locally if keys not configured
+    if razorpay_service.client:
+        checkout = razorpay_service.register_checkout(order_res, cart, session_id)
+        audit_ledger.record_event(
+            actor="RAZORPAY_API", state="PAYMENT_PENDING", title="Razorpay Standard Checkout Opened",
+            details={"session_id": session_id, "order_id": order_res.order_id,
+                     "total_amount_inr": cart.total_amount_inr}, session_id=session_id,
+        )
+        yield f"data: {json.dumps({'type': 'CHECKOUT_REQUIRED', 'order': checkout})}\n\n"
+        return
+
     try:
         payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     except RuntimeError as payment_error:
@@ -421,7 +435,7 @@ async def stream_commerce_pipeline(
 
     audit_hex_id = audit_rec_final.details.get("audit_record_id", "0x8F4A1C9")
 
-    t_db = {"type": "PANEL_B", "section": "DB_LOGGER", "text": "> State Logged to SQLite Database Ledger"}
+    t_db = {"type": "PANEL_B", "section": "DB_LOGGER", "text": "> State Logged to DynamoDB Ledger"}
     yield f"data: {json.dumps(t_db)}\n\n"
     await asyncio.sleep(0.2)
 

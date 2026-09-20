@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Buyer Agent - Agentic Commerce</title>
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
   <style>
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
     :root{
@@ -116,7 +117,7 @@
   <div class="logo">&#x1F916; <span>Buyer</span>Agent</div>
   <div class="track-badge">Track 01 &mdash; AI Growth &amp; Agentic Commerce</div>
   <div class="status-dots">
-    <span class="dot-label"><span class="dot" id="dg"></span> Gemini</span>
+    <span class="dot-label"><span class="dot" id="dg"></span> Bedrock</span>
     <span class="dot-label"><span class="dot" id="dr"></span> Razorpay</span>
     <span class="dot-label"><span class="dot" id="dm"></span> Merchant</span>
   </div>
@@ -124,7 +125,7 @@
 <div id="cfg-banner" style="display:none;background:#2d1f00;border-bottom:1px solid #6e4c00;padding:10px 20px;font-size:13px;color:#ffcc00;align-items:center;gap:10px;flex-shrink:0;">
   &#x26A0;&#xFE0F;&nbsp;Missing: <span id="cfg-keys" style="font-family:var(--mono);background:#3d2900;padding:2px 6px;border-radius:4px;font-size:11px;"></span>
   &mdash; demo mode.
-  <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--orange);">Gemini key</a> &middot;
+  <a href="https://docs.aws.amazon.com/bedrock/latest/userguide/setting-up.html" target="_blank" style="color:var(--orange);">AWS Bedrock setup</a> &middot;
   <a href="https://dashboard.razorpay.com" target="_blank" style="color:var(--orange);">Razorpay keys</a>
 </div>
 <div class="workspace">
@@ -360,6 +361,41 @@ function handleEvent(ev){
       ir('Mandate',rec.mandate_id||'--','')+ir('Audit Hash',String(rec.audit_hash_chain||'--').substring(0,32)+'...','')+'</div></div>';
     setTimeout(function(){sw(5,'receipt');},400);
     finalize();
+  }else if(tp==='CHECKOUT_REQUIRED'){
+    if(!window.Razorpay){addChat('system','Razorpay Checkout could not be loaded.');finalize();return;}
+    addLog('RAZORPAY','Awaiting user payment','Opening Razorpay Test Checkout');
+    var merchant=ev.merchant_url||'http://localhost:8000';
+    var paymentFailed=false;
+    var checkout=new Razorpay(Object.assign({},ev.order||{}, {
+      retry:{enabled:true,max_count:3},
+      notes:{test_payment_hint:'Use a domestic card from the Razorpay Test Mode dashboard.'},
+      method:{upi:false,card:true,netbanking:true,wallet:true},
+      handler:async function(response){
+      window.activeCheckout=null;
+      var verify=await fetch(merchant+'/api/razorpay/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(response)});
+      var result=await verify.json();
+      if(verify.ok){addLog('RAZORPAY','Payment verified','Order '+(result.order_id||''));addChat('system','Payment verified. Your order is confirmed.');}
+      else {addLog('ERROR','Payment verification failed',result.detail||'');addChat('system',result.detail||'Payment verification failed.');}
+      finalize();
+    },modal:{ondismiss:function(){
+      window.activeCheckout=null;
+      if(!paymentFailed){addChat('system','Checkout was cancelled. No payment was confirmed. In Test Mode, use UPI ID success@razorpay.');finalize();}
+    }}}));
+    checkout.on('payment.failed',async function(response){
+      paymentFailed=true;
+      window.activeCheckout=null;
+      var error=response.error||{};
+      try{
+        await fetch(merchant+'/api/razorpay/failure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          order_id:error.metadata&&error.metadata.order_id,code:error.code,description:error.description,
+          reason:error.reason,source:error.source,step:error.step
+        })});
+      }catch(_){}
+      addLog('ERROR','Payment declined',error.description||error.reason||'Authorization was declined.');
+      addChat('system','Payment failed. Use a domestic card listed in your Razorpay Test Mode dashboard.');
+      finalize();
+    });
+    checkout.open();
   }else if(tp==='ERROR'){
     addLog('ERROR',ev.detail||'Pipeline error','');
     addChat('system','Error: '+(ev.detail||'Pipeline error'));

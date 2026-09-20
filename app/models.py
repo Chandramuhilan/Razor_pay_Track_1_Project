@@ -27,6 +27,10 @@ class Product(BaseModel):
     in_stock: bool = True
     stock_quantity: int = Field(default=100, description="Actual inventory count. in_stock is derived from stock_quantity > 0.")
     specifications: Dict[str, Any] = Field(default_factory=dict)
+    source: str = "merchant_catalog"
+    product_url: Optional[str] = None
+    image: Optional[str] = None
+    rating: Optional[float] = None
 
     def deduct(self, qty: int = 1) -> None:
         """Decrement inventory. Raises ValueError if insufficient stock."""
@@ -52,7 +56,7 @@ class AP2Mandate(BaseModel):
     authorized_merchant_id: str
     allowed_categories: List[str] = Field(default_factory=lambda: [
         "charging", "laptops", "peripherals", "displays", "audio",
-        "electronics", "software", "warranty", "services", "accessories",
+        "electronics", "phones", "software", "warranty", "services", "accessories",
     ])
     expires_at: str
     nonce: str = Field(default_factory=lambda: uuid.uuid4().hex)

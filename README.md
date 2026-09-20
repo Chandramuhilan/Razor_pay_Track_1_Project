@@ -1,4 +1,4 @@
-# Agentic Commerce Platform
+﻿# Agentic Commerce Platform
 
 This is my prototype for an AI buyer and a merchant agent working together. I started with a simple question: can a buyer agent find a product, negotiate an upsell, and complete a purchase without giving the agent unlimited control over money?
 
@@ -27,7 +27,7 @@ I broke the flow into small decisions instead of letting one model call do every
 4. Check stock before sending anything to Razorpay.
 5. Use Razorpay Standard Checkout for real test-mode authorization.
 6. Confirm the order only after the payment is verified and captured.
-7. Write the decisions and failures to a hash-chained SQLite ledger.
+7. Write the decisions and failures to a hash-chained DynamoDB ledger.
 
 ![Implementation plan](Documents/Plan.jpg)
 
@@ -66,44 +66,53 @@ flowchart LR
 
 The important rule is simple: a failed check stops the flow. The system does not invent a payment, and it does not report an order as complete just because an order ID exists.
 
-The test suite currently passes **28 tests**. With Razorpay test keys configured, the server creates real test orders and opens Standard Checkout; the final order is confirmed only when Razorpay reports a captured payment.
+The test suite covers the offline flow. With `RAZORPAY_MODE=test` and Razorpay test keys configured, the server creates a real test order and opens Standard Checkout; the user completes the payment and the final order is confirmed only after server-side signature and captured-status verification.
+
+## Payment and product-source modes
+
+`RAZORPAY_MODE=mock` is the offline default and is the only mode that simulates settlement. Set `RAZORPAY_MODE=test` with valid test keys to open Razorpay Standard Checkout; the backend never submits a UPI ID or treats a browser success message as a confirmed payment.
+
+Set `AMAZON_MCP_ENABLED=true` plus `AMAZON_MCP_URL` to use an authorised Amazon-product MCP server exposing `amazon_search_products`. Results are normalized and the backend still enforces availability and `price <= AP2 mandate budget`. With it disabled, the built-in mock product provider keeps the demo usable without credentials.
 
 ---
 
-## ⚙️ Setup Guide
+## âš™ï¸ Setup Guide
 
-### Step 1 — Install Dependencies
+### Step 1 â€” Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 2 — Get API Keys (Free)
+### Step 2 â€” Get API Keys (Free)
 
-#### Gemini API Key (Required for real AI)
+#### AWS Bedrock (Required for real AI)
 
-1. Go to **https://aistudio.google.com/app/apikey**
-2. Sign in with your Google account
-3. Click **"Create API key"**
-4. Copy the key (starts with `AIzaSy...`)
+1. Choose an AWS region where the selected Bedrock model is enabled.
+2. Grant the runtime `bedrock:Converse` permission for the model.
+3. Configure credentials through the standard AWS credential chain.
 
 #### Razorpay Test Keys (Required for real payments)
 
 1. Go to **https://dashboard.razorpay.com**
 2. Sign up free (no real money involved in test mode)
-3. Go to **Settings → API Keys**
+3. Go to **Settings â†’ API Keys**
 4. Click **"Generate Test Key"**
 5. Copy **Key ID** (starts with `rzp_test_...`) and **Key Secret**
 
-### Step 3 — Configure `.env`
+### Step 3 â€” Configure `.env`
 
 Open `Razor_pay/.env` and fill in your keys:
 
 ```env
-# Google AI — get from aistudio.google.com/app/apikey
-GEMINI_API_KEY=AIzaSy_your_key_here
+# AWS Bedrock â€” use the AWS credential chain (profile, environment, or IAM role)
+AI_PROVIDER=bedrock
+AWS_REGION=us-east-1
+BEDROCK_MODEL_ID=amazon.nova-lite-v1:0
+BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0
+DYNAMODB_TABLE_NAME=acp-audit-ledger
 
-# Razorpay Test Mode — get from dashboard.razorpay.com → Settings → API Keys
+# Razorpay Test Mode â€” get from dashboard.razorpay.com â†’ Settings â†’ API Keys
 RAZORPAY_KEY_ID=rzp_test_xxxxxxxxxxxxxxxxxxxx
 RAZORPAY_KEY_SECRET=your_secret_here
 
@@ -115,13 +124,52 @@ BUYER_AGENT_URL=http://localhost:8001
 AP2_MANDATE_SECRET=AP2_MANDATE_SECRET_AUTHORIZATION_KEY_2026
 ```
 
-> **Without keys**: Everything still runs in demo/simulated mode. The UI shows a warning banner explaining which keys are missing. All protocol structures (A2A, MCP, AP2) are real — only Razorpay API calls and Gemini AI reasoning are simulated.
+> **Without keys**: Everything still runs in demo/simulated mode. The UI shows a warning banner explaining which keys are missing. All protocol structures (A2A, MCP, AP2) are real â€” only Razorpay API calls and Bedrock AI reasoning are unavailable.
+
+For Bedrock mode, grant the runtime `bedrock:Converse` permission for the selected model and configure AWS credentials with the standard AWS credential chain. The buyer health endpoint reports `ai_mode: "bedrock"` only when credentials are available; otherwise it reports `unavailable` and uses the deterministic fallback.
+
+Create the DynamoDB table before starting the services. The table uses `pk` as
+the partition key and `sk` as the sort key; users and audit events share this table.
+
+From PowerShell, create the table once with the same AWS profile and region used
+by the application:
+
+```powershell
+aws dynamodb create-table `
+  --table-name acp-audit-ledger `
+  --attribute-definitions AttributeName=pk,AttributeType=S AttributeName=sk,AttributeType=S `
+  --key-schema AttributeName=pk,KeyType=HASH AttributeName=sk,KeyType=RANGE `
+  --billing-mode PAY_PER_REQUEST `
+  --region us-east-1 `
+  --profile default
+
+aws dynamodb wait table-exists `
+  --table-name acp-audit-ledger `
+  --region us-east-1 `
+  --profile default
+```
+
+If the table already exists, `create-table` can be skipped. Verify access before
+starting the application:
+
+```powershell
+aws sts get-caller-identity --profile default
+aws dynamodb describe-table `
+  --table-name acp-audit-ledger `
+  --region us-east-1 `
+  --profile default
+```
+
+The application uses `boto3`'s standard AWS credential chain, so it reads the
+`default` profile configured by `aws configure`. `app/services/database_ledger.py`
+persists audit records and `app/services/auth_service.py` persists users in this
+same table. No SQLite database is used.
 
 ---
 
-## 🚀 Quick Start
+## ðŸš€ Quick Start
 
-### Terminal 1 — Merchant Agent (port 8000)
+### Terminal 1 â€” Merchant Agent (port 8000)
 
 ```bash
 cd Razor_pay
@@ -130,16 +178,16 @@ python main.py
 
 Open: http://localhost:8000 | Swagger: http://localhost:8000/docs
 
-### Terminal 2 — Buyer Agent (port 8001)
+### Terminal 2 â€” Buyer Agent (port 8001)
 
 ```bash
 cd Razor_pay
 python buyer_agent/main.py
 ```
 
-Open: **http://localhost:8001** ← The buyer UI with split-screen interface
+Open: **http://localhost:8001** â† The buyer UI with split-screen interface
 
-### Terminal 3 — Standalone MCP Server (optional, for external LLM clients)
+### Terminal 3 â€” Standalone MCP Server (optional, for external LLM clients)
 
 ```bash
 cd Razor_pay
@@ -155,14 +203,14 @@ python -m pytest tests/ -v
 
 ---
 
-## 🔌 Protocol Endpoints
+## ðŸ”Œ Protocol Endpoints
 
 ### Merchant Agent (port 8000)
 
 | Endpoint                    | Method | Protocol           | Description                                               |
 | :-------------------------- | :----- | :----------------- | :-------------------------------------------------------- |
 | `/.well-known/agent.json` | GET    | **A2A**      | Real`a2a.types.AgentCard` protobuf                      |
-| `/api/a2a/message`        | POST   | **A2A**      | Real`SendMessageRequest → Task → SendMessageResponse` |
+| `/api/a2a/message`        | POST   | **A2A**      | Real`SendMessageRequest â†’ Task â†’ SendMessageResponse` |
 | `/mcp`                    | POST   | **MCP**      | JSON-RPC 2.0:`tools/list`, `tools/call`               |
 | `/api/mcp/tools`          | GET    | **MCP**      | `mcp.types.Tool[]` manifest                             |
 | `/api/catalog`            | GET    | **UCP**      | Schema.org JSON-LD agent-readable catalog                 |
@@ -184,65 +232,66 @@ python -m pytest tests/ -v
 
 ---
 
-## 📚 Real Protocol Libraries Used
+## ðŸ“š Real Protocol Libraries Used
 
 | Protocol     | Library          | Version    | Types Used                                                                                                     |
 | :----------- | :--------------- | :--------- | :------------------------------------------------------------------------------------------------------------- |
 | Google A2A   | `a2a-sdk`      | `1.1.2`  | `AgentCard`, `Message`, `Part`, `Task`, `TaskStatus`, `TaskState`, `SendMessageRequest/Response` |
 | MCP          | `mcp`          | `1.26.0` | `Tool`, `ToolAnnotations`, `TextContent`, `CallToolResult`, `ListToolsResult`                        |
 | Razorpay     | `razorpay`     | `2.0.1`  | Test-mode order creation, payment execution, HMAC-SHA256 verification; live API errors fail closed             |
-| Google AI    | `google-genai` | `2.19.0` | `Gemini 2.5 Flash`, `text-embedding-004`                                                                   |
-| AP2 Mandates | stdlib`hmac`   | —         | HMAC-SHA256 signed bounded spending mandates                                                                   |
+| AWS AI       | `boto3`        | `>=1.35.0` | Amazon Bedrock Converse and Titan embeddings                                                        |
+| AP2 Mandates | stdlib`hmac`   | â€”         | HMAC-SHA256 signed bounded spending mandates                                                                   |
 
 ---
 
-## 🏆 Track 01 Bar Compliance
+## ðŸ† Track 01 Bar Compliance
 
 | Requirement                              | Implementation                                                                                                                                                |
 | :--------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Grow merchant revenue**          | Dynamic upsell engine picks highest-margin add-on within AP2 mandate headroom                                                                                 |
 | **Sellable to AI buyers**          | Real`AgentCard` + real MCP `Tool[]` + Schema.org UCP catalog                                                                                              |
-| **Every money action explainable** | SHA-256 hash-chained SQLite audit ledger at`GET /api/audit/ledger`                                                                                          |
-| **Bounded and gated**              | HMAC-SHA256 AP2 Mandate required for every payment — budget/merchant/expiry enforced                                                                         |
+| **Every money action explainable** | SHA-256 hash-chained DynamoDB audit ledger at`GET /api/audit/ledger`                                                                                         |
+| **Bounded and gated**              | HMAC-SHA256 AP2 Mandate required for every payment â€” budget/merchant/expiry enforced                                                                         |
 | **Audit trail shown**              | Full hash-chained event timeline with`integrity_verified: true`                                                                                             |
-| **Failures handled gracefully**    | Tampered/expired/category-invalid mandate · Budget breach · Merchant offline · Out-of-stock checkout · Razorpay gateway failure · Missing keys/demo mode |
+| **Failures handled gracefully**    | Tampered/expired/category-invalid mandate Â· Budget breach Â· Merchant offline Â· Out-of-stock checkout Â· Razorpay gateway failure Â· Missing keys/demo mode |
 | **Razorpay test-mode APIs**        | `razorpay==2.0.1` SDK, real `client.order.create()`, HMAC verification                                                                                    |
-| **Agent-to-agent commerce**        | Real A2A HTTP calls from buyer → merchant using`a2a-sdk` protobuf types                                                                                    |
+| **Agent-to-agent commerce**        | Real A2A HTTP calls from buyer â†’ merchant using`a2a-sdk` protobuf types                                                                                    |
 
 ---
 
-## 📁 Project Structure
+## ðŸ“ Project Structure
 
 ```
 Razor_pay/
-├── .env                          ← Your API keys (git-ignored)
-├── .env.example                  ← Template — copy to .env
-├── requirements.txt              ← Pinned production dependencies
-├── main.py                       ← Merchant Agent (port 8000)
-├── mcp_server.py                 ← Standalone FastMCP stdio server
-├── buyer_agent/                  ← Buyer Agent (port 8001)
-│   ├── main.py                   ← FastAPI entry point
-│   ├── models.py                 ← BuyerIntent, PurchaseRequest
-│   ├── static/index.html         ← Split-screen buyer UI
-│   └── agent/
-│       ├── buyer_core.py         ← Gemini-powered pipeline orchestrator
-│       ├── a2a_client.py         ← Real A2A HTTP client (a2a-sdk)
-│       ├── mcp_client.py         ← Real MCP HTTP client (mcp.types)
-│       └── ap2_mandate.py        ← Standalone HMAC-SHA256 mandate creation
-├── app/
-│   ├── config.py                 ← Pydantic-settings (loads .env)
-│   ├── models.py                 ← Core Pydantic data models
-│   ├── protocols/
-│   │   ├── a2a.py                ← Real a2a-sdk AgentCard + message handler
-│   │   ├── mcp_ucp.py            ← Real mcp.types Tool + CallToolResult
-│   │   └── ap2_mandate.py        ← HMAC-SHA256 mandate engine
-│   ├── merchant/
-│   │   ├── catalog.py            ← TF-IDF + Gemini embedding search
-│   │   └── upsell_engine.py      ← Revenue maximizer
-│   └── services/
-│       ├── embedding_service.py  ← Gemini text-embedding-004 + JSON cache
-│       ├── razorpay_service.py   ← Real Razorpay SDK integration
-│       ├── audit_ledger.py       ← SHA-256 hash-chain ledger
-│       └── database_ledger.py    ← SQLite persistence
-└── tests/                        ← 22 automated tests
+â”œâ”€â”€ .env                          â† Your API keys (git-ignored)
+â”œâ”€â”€ .env.example                  â† Template â€” copy to .env
+â”œâ”€â”€ requirements.txt              â† Pinned production dependencies
+â”œâ”€â”€ main.py                       â† Merchant Agent (port 8000)
+â”œâ”€â”€ mcp_server.py                 â† Standalone FastMCP stdio server
+â”œâ”€â”€ buyer_agent/                  â† Buyer Agent (port 8001)
+â”‚   â”œâ”€â”€ main.py                   â† FastAPI entry point
+â”‚   â”œâ”€â”€ models.py                 â† BuyerIntent, PurchaseRequest
+â”‚   â”œâ”€â”€ static/index.html         â† Split-screen buyer UI
+â”‚   â””â”€â”€ agent/
+â”‚       â”œâ”€â”€ buyer_core.py         â† Bedrock-powered pipeline orchestrator
+â”‚       â”œâ”€â”€ a2a_client.py         â† Real A2A HTTP client (a2a-sdk)
+â”‚       â”œâ”€â”€ mcp_client.py         â† Real MCP HTTP client (mcp.types)
+â”‚       â””â”€â”€ ap2_mandate.py        â† Standalone HMAC-SHA256 mandate creation
+â”œâ”€â”€ app/
+â”‚   â”œâ”€â”€ config.py                 â† Pydantic-settings (loads .env)
+â”‚   â”œâ”€â”€ models.py                 â† Core Pydantic data models
+â”‚   â”œâ”€â”€ protocols/
+â”‚   â”‚   â”œâ”€â”€ a2a.py                â† Real a2a-sdk AgentCard + message handler
+â”‚   â”‚   â”œâ”€â”€ mcp_ucp.py            â† Real mcp.types Tool + CallToolResult
+â”‚   â”‚   â””â”€â”€ ap2_mandate.py        â† HMAC-SHA256 mandate engine
+â”‚   â”œâ”€â”€ merchant/
+â”‚   â”‚   â”œâ”€â”€ catalog.py            â† Structured catalog search
+â”‚   â”‚   â””â”€â”€ upsell_engine.py      â† Revenue maximizer
+â”‚   â””â”€â”€ services/
+â”‚       â”œâ”€â”€ embedding_service.py  â† Bedrock Titan embeddings + JSON cache
+â”‚       â”œâ”€â”€ razorpay_service.py   â† Real Razorpay SDK integration
+â”‚       â”œâ”€â”€ audit_ledger.py       â† SHA-256 hash-chain ledger
+â”‚       â””â”€â”€ database_ledger.py    â† DynamoDB persistence
+â””â”€â”€ tests/                        â† 22 automated tests
 ```
+

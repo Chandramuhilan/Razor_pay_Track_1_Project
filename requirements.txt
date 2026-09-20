@@ -18,14 +18,19 @@ a2a-sdk==1.1.2
 # ── MCP Protocol (Model Context Protocol) ─────────────────────────────────
 mcp==1.26.0
 
-# ── Google AI (Gemini 2.5 Flash + text-embedding-004) ─────────────────────
-google-genai==2.19.0
+# ── AWS Bedrock ─────────────────────────────────────────────────────────────
+boto3>=1.35.0
+
 
 # ── Razorpay Payment Gateway ───────────────────────────────────────────────
 razorpay==2.0.1
 
 # ── HTTP Client (for inter-agent communication) ────────────────────────────
 httpx==0.28.1
+
+# ── Authentication ──────────────────────────────────────────────────────────
+bcrypt==4.2.0
+pyjwt==2.10.1
 
 # ── Testing ────────────────────────────────────────────────────────────────
 pytest==8.3.2

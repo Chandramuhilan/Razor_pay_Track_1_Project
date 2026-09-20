@@ -1,5 +1,3 @@
-import os
-import json
 import hashlib
 import math
 import logging
@@ -12,33 +10,22 @@ logger = logging.getLogger(__name__)
 class EmbeddingService:
     def __init__(self):
         self._client = None
-        if settings.GEMINI_API_KEY:
+        self._credential_error: str | None = None
+        if settings.ai_provider() == "bedrock":
             try:
-                from google import genai
-                self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            except Exception as e:
-                logger.error(f"Failed to initialize Gemini client: {e}")
-        
-        self.CACHE_FILE = 'app/data/embedding_cache.json'
+                import boto3
+                session = boto3.Session(region_name=settings.AWS_REGION or None)
+                if session.get_credentials() is None:
+                    self._credential_error = "AWS credentials were not found."
+                else:
+                    self._client = session.client(
+                        "bedrock-runtime", region_name=settings.AWS_REGION or None
+                    )
+            except Exception as exc:
+                logger.error("AWS Bedrock embedding client initialization failed: %s", exc)
+                self._credential_error = str(exc)
+
         self._cache: Dict[str, List[float]] = {}
-        self._load_cache()
-
-    def _load_cache(self):
-        try:
-            if os.path.exists(self.CACHE_FILE):
-                with open(self.CACHE_FILE, 'r') as f:
-                    self._cache = json.load(f)
-        except Exception as e:
-            logger.warning(f"Could not load embedding cache: {e}")
-            self._cache = {}
-
-    def _save_cache(self):
-        try:
-            os.makedirs(os.path.dirname(self.CACHE_FILE), exist_ok=True)
-            with open(self.CACHE_FILE, 'w') as f:
-                json.dump(self._cache, f)
-        except Exception as e:
-            logger.warning(f"Could not save embedding cache: {e}")
 
     def embed_text(self, text: str) -> List[float]:
         if not self._client:
@@ -49,13 +36,15 @@ class EmbeddingService:
             return self._cache[text_hash]
         
         try:
-            result = self._client.models.embed_content(
-                model='text-embedding-004',
-                contents=[text]
+            import json
+            result = self._client.invoke_model(
+                modelId=settings.BEDROCK_EMBEDDING_MODEL_ID,
+                body=json.dumps({"inputText": text}),
+                contentType="application/json",
+                accept="application/json",
             )
-            embedding = result.embeddings[0].values
+            embedding = json.loads(result["body"].read())["embedding"]
             self._cache[text_hash] = embedding
-            self._save_cache()
             return embedding
         except Exception as e:
             logger.error(f"Error embedding text: {e}")
@@ -80,18 +69,9 @@ class EmbeddingService:
                 
         if texts_to_embed:
             try:
-                result = self._client.models.embed_content(
-                    model='text-embedding-004',
-                    contents=texts_to_embed
-                )
                 for i, text in enumerate(texts_to_embed):
                     orig_idx = indices_to_embed[i]
-                    emb = result.embeddings[i].values
-                    embeddings[orig_idx] = emb
-                    
-                    text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
-                    self._cache[text_hash] = emb
-                self._save_cache()
+                    embeddings[orig_idx] = self.embed_text(text)
             except Exception as e:
                 logger.error(f"Error in batch embedding: {e}")
                 

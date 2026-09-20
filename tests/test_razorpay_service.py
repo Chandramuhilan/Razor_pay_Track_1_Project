@@ -33,44 +33,26 @@ def test_razorpay_order_creation_and_verification():
     assert service.verify_payment_signature(verification) is True
 
 
-def test_execute_payment_falls_back_to_simulation_on_api_error():
-    """
-    When the Razorpay payment API call fails, execute_payment() falls back
-    to a locally-signed simulated payment (no exception raised).
-    """
+def test_execute_payment_rejects_server_initiated_live_payment():
+    """A configured Razorpay client must wait for a human Checkout callback."""
     service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
 
     fake_client = MagicMock()
     service.client = fake_client
 
-    # Simulate API HTTP error
-    with patch("requests.post") as mock_post:
-        mock_post.return_value = MagicMock(status_code=400, text='{"error":"bad"}')
-        payment_id, signature = service.execute_payment("order_real123", 100000)
-
-    # Should return a valid simulated payment (not raise)
-    assert payment_id.startswith("pay_")
-    assert len(signature) == 64  # SHA-256 hex
+    with pytest.raises(RuntimeError, match="Standard Checkout"):
+        service.execute_payment("order_real123", 100000)
 
 
-def test_execute_payment_uses_real_payment_id_on_success():
-    """
-    When the Razorpay payment API returns a payment_id, execute_payment()
-    uses that real payment_id to generate the HMAC signature.
-    """
+def test_checkout_verification_uses_razorpay_utility():
+    """Only Razorpay's signature verifier may approve a test-mode callback."""
     service = RazorpayService(key_id="rzp_test_example", key_secret="secret")
-    service.client = MagicMock()  # Pretend client is initialised
 
-    # execute_payment now generates payment_id locally (no requests.post)
-    payment_id, signature = service.execute_payment("order_real456", 299800)
-
-    # payment_id must be pay_<14 hex chars>
-    assert payment_id.startswith("pay_")
-    assert len(payment_id) == 18  # "pay_" + 14 hex chars
-
-    # signature must be valid HMAC of order_id|payment_id
-    expected_sig = service._generate_hmac("order_real456", payment_id)
-    assert signature == expected_sig
+    fake_client = MagicMock()
+    service.client = fake_client
+    verification = PaymentVerification(razorpay_order_id="order_real456", razorpay_payment_id="pay_realtest123", razorpay_signature="gateway_signature")
+    assert service.verify_checkout_payment(verification) is True
+    fake_client.utility.verify_payment_signature.assert_called_once()
 
 
 def test_order_requests_automatic_capture():

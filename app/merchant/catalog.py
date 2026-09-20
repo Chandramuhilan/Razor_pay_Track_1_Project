@@ -37,6 +37,7 @@ _CATEGORY_KEYWORDS: Dict[str, List[str]] = {
     "peripherals": ["mouse", "keyboard", "pad", "mat", "mechanical", "wireless", "ergo", "peripheral"],
     "displays":    ["monitor", "display", "screen", "4k", "144hz", "hdmi", "usb-c"],
     "audio":       ["headphone", "earphone", "earbud", "speaker", "audio", "noise", "anc", "music"],
+    "phones":      ["iphone", "phone", "smartphone", "mobile", "ios"],
     "accessories": ["light", "lamp", "hub", "dock", "stand", "bag", "sleeve", "accessory"],
     "warranty":    ["warranty", "protection", "care", "cover", "accidental"],
 }
@@ -127,6 +128,7 @@ class MerchantCatalog:
     """
 
     def __init__(self):
+        self._external_products: List[Product] = []
         self._products: List[Product] = [
             # ── Charging & Cables ─────────────────────────────────────────
             Product(
@@ -268,6 +270,39 @@ class MerchantCatalog:
                 merchant_margin_pct=0.32,
                 specifications={"anc": True, "battery": "40 Hours"},
             ),
+            Product(
+                id="prod_headphones_wireless_2k",
+                name="SoundWave Wireless Headphones",
+                category="audio",
+                price_inr=2199.00,
+                stock_quantity=75,
+                description="Lightweight wireless headphones for calls, music, and everyday travel.",
+                tags=["headphones", "audio", "wireless", "bluetooth"],
+                merchant_margin_pct=0.28,
+                specifications={"battery": "30 Hours", "connectivity": "Bluetooth 5.3"},
+            ),
+            Product(
+                id="prod_iphone_69k",
+                name="iPhone 15 128GB",
+                category="phones",
+                price_inr=69900.00,
+                stock_quantity=12,
+                description="Unlocked 128GB iPhone with a high-resolution camera and all-day battery.",
+                tags=["iphone", "phone", "smartphone", "ios", "128gb"],
+                merchant_margin_pct=0.10,
+                specifications={"storage": "128GB", "network": "5G"},
+            ),
+            Product(
+                id="prod_laptop_gaming_78k",
+                name="TechPro GameBook 15 (RTX 4050, 16GB RAM, 1TB SSD)",
+                category="laptops",
+                price_inr=78000.00,
+                stock_quantity=15,
+                description="Gaming laptop with dedicated graphics, fast refresh display, and 16GB memory.",
+                tags=["laptop", "gaming", "rtx", "16gb", "laptops"],
+                merchant_margin_pct=0.17,
+                specifications={"gpu": "RTX 4050", "ram": "16GB", "storage": "1TB SSD"},
+            ),
 
             # ── Warranties ─────────────────────────────────────────────────
             Product(
@@ -297,16 +332,16 @@ class MerchantCatalog:
     # ── Read ─────────────────────────────────────────────────────────────────
 
     def get_all_products(self) -> List[Product]:
-        return self._products
+        return self._products + self._external_products
 
     def get_product_by_id(self, product_id: str) -> Optional[Product]:
-        for p in self._products:
+        for p in self.get_all_products():
             if p.id == product_id:
                 return p
         return None
 
     def get_in_stock_products(self) -> List[Product]:
-        return [p for p in self._products if p.in_stock and p.stock_quantity > 0]
+        return [p for p in self.get_all_products() if p.in_stock and p.stock_quantity > 0]
 
     # ── Stock management ─────────────────────────────────────────────────────
 
@@ -348,7 +383,7 @@ class MerchantCatalog:
                 "stock_quantity": p.stock_quantity,
                 "in_stock": p.in_stock,
             }
-            for p in self._products
+            for p in self.get_all_products()
         ]
 
     # ── Structured Search ────────────────────────────────────────────────────
@@ -409,12 +444,25 @@ class MerchantCatalog:
 
         return matched, len(matched), meta
 
+    def search_for_agent(self, query: ProductQuery) -> Tuple[List[Product], int, Dict[str, Any]]:
+        """Use the authorised Amazon MCP source when configured, else local mock data."""
+        from app.config import settings
+        if not settings.AMAZON_MCP_ENABLED:
+            return self.structured_search(query)
+        from app.merchant.amazon_mcp import AmazonMCPProvider
+        products = AmazonMCPProvider().search(query)
+        self._external_products = products
+        detected = _detect_categories(query.query_text.lower())
+        products.sort(key=lambda p: _structured_score(query.query_text.lower(), p, detected), reverse=True)
+        return products, len(products), {"detected_categories": detected,
+            "search_method": "authorized_amazon_mcp", "source": "amazon_mcp"}
+
     # ── Legacy alias so existing callers don't break ─────────────────────────
     def vector_search_catalog(self, query: ProductQuery) -> Tuple[List[Product], int, float]:
         """Alias for backward compatibility. Calls structured_search internally."""
-        products, count, meta = self.structured_search(query)
+        products, count, meta = self.search_for_agent(query)
         return products, count, meta.get("top_structured_score", 0.0)
 
     def search_catalog(self, query: ProductQuery) -> List[Product]:
-        products, _, _ = self.structured_search(query)
+        products, _, _ = self.search_for_agent(query)
         return products

@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.services.ai_service import ai_service
 from buyer_agent.agent.buyer_core import BuyerCore
 from buyer_agent.agent.a2a_client import A2AClient
 from buyer_agent.agent.mcp_client import MCPClient
@@ -36,7 +37,7 @@ app = FastAPI(
     title="AI Buyer Agent — Agentic Commerce",
     description=(
         "Autonomous buyer agent that uses real A2A Protocol (a2a-sdk), "
-        "real MCP tools (mcp library), AP2 Bounded Mandates, and Gemini 2.5 Flash "
+        "real MCP tools (mcp library), AP2 Bounded Mandates, and AWS Bedrock "
         "to discover products, negotiate upsells, and complete Razorpay payments."
     ),
     version="1.0.0",
@@ -64,9 +65,12 @@ async def index():
 @app.get("/api/buyer/health", tags=["Status"])
 async def health():
     missing = settings.get_missing_keys()
+    if settings.ai_provider() == "bedrock" and not ai_service.is_available:
+        missing.append("AWS credentials")
     return {
         "status": "ok",
-        "gemini_mode": settings.gemini_mode(),
+        "ai_provider": settings.ai_provider(),
+        "ai_mode": ai_service.mode,
         "razorpay_mode": settings.razorpay_mode(),
         "merchant_url": settings.MERCHANT_AGENT_URL,
         "missing_keys": missing,

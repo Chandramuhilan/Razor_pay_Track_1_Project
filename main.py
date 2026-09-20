@@ -7,12 +7,12 @@ Protocol Stack (all using real libraries):
   - AP2 Bounded Mandates : HMAC-SHA256 cryptographic payment mandate validation
   - Razorpay Payments    : razorpay SDK    (Order creation + HMAC verification)
   - SSE Streaming        : FastAPI StreamingResponse
-  - SQLite Ledger        : Tamper-evident hash-chained audit log
+  - DynamoDB Ledger      : Tamper-evident hash-chained audit log
 
 Hackathon Track 01 — AI Growth & Agentic Commerce
 """
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +21,7 @@ import json
 import uuid
 import logging
 from typing import Dict, Any
+from botocore.exceptions import ClientError, NoCredentialsError
 
 from app.models import (
     ProductQuery, AP2MandateSignature, Cart, CartItem,
@@ -36,6 +37,15 @@ from app.services.razorpay_service import RazorpayService
 from app.services.audit_ledger import AuditLedgerEngine
 from app.services.stream_service import stream_commerce_pipeline
 from app.buyer.buyer_agent import AIBuyerAgent
+from app.config import settings
+from app.services.auth_service import (
+    AuthenticatedUser,
+    UserLogin,
+    UserRegister,
+    get_current_user,
+    login_user,
+    register_user,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,6 +81,51 @@ catalog = MerchantCatalog()
 upsell_engine = MerchantUpsellEngine(catalog)
 audit_ledger = AuditLedgerEngine()
 razorpay_service = RazorpayService()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Authentication Endpoints
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.post("/auth/register", tags=["Authentication"], summary="Register a new user")
+def auth_register(payload: UserRegister):
+    """Creates a user with a bcrypt-hashed password and returns a session JWT."""
+    result = register_user(payload)
+    audit_ledger.record_event(
+        actor="USER",
+        state="USER_REGISTERED",
+        title="New user account created",
+        details={"user_id": result.user.user_id, "email": result.user.email},
+    )
+    return result
+
+
+@app.post("/auth/login", tags=["Authentication"], summary="Log in with email + password")
+def auth_login(payload: UserLogin):
+    result = login_user(payload)
+    audit_ledger.record_event(
+        actor="USER",
+        state="USER_LOGIN",
+        title="User logged in",
+        details={"user_id": result.user.user_id, "email": result.user.email},
+    )
+    return result
+
+
+@app.post("/auth/logout", tags=["Authentication"], summary="Log out (client discards the JWT)")
+def auth_logout(current_user: AuthenticatedUser = Depends(get_current_user)):
+    """Sessions are stateless JWTs; logout is enforced client-side by discarding the token.
+    This endpoint just confirms the token was valid and logs the event."""
+    audit_ledger.record_event(
+        actor="USER", state="USER_LOGOUT", title="User logged out",
+        details={"user_id": current_user.user_id},
+    )
+    return {"status": "logged_out"}
+
+
+@app.get("/auth/me", tags=["Authentication"], summary="Get the current authenticated user")
+def auth_me(current_user: AuthenticatedUser = Depends(get_current_user)):
+    return {"user_id": current_user.user_id, "email": current_user.email}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -244,7 +299,7 @@ def get_stock_snapshot():
 @app.get(
     "/api/audit/ledger",
     tags=["Audit & Explainability"],
-    summary="Cryptographic audit trail — every agent action, hash-chained, SQLite-persisted",
+    summary="Cryptographic audit trail — every agent action, hash-chained, DynamoDB-persisted",
 )
 def get_audit_ledger():
     """
@@ -256,7 +311,16 @@ def get_audit_ledger():
     """
     events = audit_ledger.get_full_ledger()
     is_valid = audit_ledger.verify_ledger_integrity()
-    db_records = audit_ledger.db_ledger.get_all_records(limit=25)
+    try:
+        db_records = audit_ledger.db_ledger.get_all_records(limit=25)
+    except (NoCredentialsError, ClientError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "DynamoDB is unavailable. Configure AWS credentials and verify "
+                f"table '{settings.DYNAMODB_TABLE_NAME}' in region '{settings.AWS_REGION}'."
+            ),
+        ) from exc
     return {
         "integrity_verified": is_valid,
         "total_events": len(events),
@@ -285,11 +349,24 @@ async def stream_commerce_flow(payload: Dict[str, Any]):
     4. Validate AP2 Bounded Mandate (signature + budget + merchant + expiry)
     5. Create Razorpay order via SDK → generate HMAC payment signature
     6. Verify Razorpay HMAC-SHA256 → capture payment
-    7. Write final audit event to SQLite → hash-chain verified
+    7. Write final audit event to DynamoDB → hash-chain verified
 
     Supports simulation flags: tamper_token, simulate_razorpay_error,
     simulate_stock_out, simulate_counter_offer.
     """
+    import boto3
+
+    if boto3.Session(region_name=settings.AWS_REGION or None).get_credentials() is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": (
+                    "DynamoDB is unavailable because AWS credentials were not found. "
+                    "Configure the AWS credential chain before starting the stream."
+                )
+            },
+        )
+
     user_query = payload.get(
         "user_query",
         "Looking for a 65W GaN fast charger with USB-C cable under ₹2,500.",
@@ -320,10 +397,17 @@ async def stream_commerce_flow(payload: Dict[str, Any]):
     tags=["Commerce Pipeline"],
     summary="Synchronous autonomous commerce flow (non-streaming)",
 )
-def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
+def run_autonomous_commerce_flow(
+    payload: Dict[str, Any] = None,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
     """
     Synchronous single-shot autonomous commerce pipeline endpoint.
     Returns the full receipt, cart, mandate validation, and telemetry log.
+
+    The buyer identity (user_id) is ALWAYS taken from the authenticated
+    session (JWT), never from the request body, so a client cannot spend
+    on behalf of another user.
     """
     payload = payload or {}
     user_query = payload.get(
@@ -335,7 +419,8 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
 
     session_id = f"#TX-{uuid.uuid4().hex[:4].upper()}"
     state_machine = CommerceStateMachine(session_id)
-    buyer = AIBuyerAgent()
+    # Buyer identity comes from the verified JWT session, not client input.
+    buyer = AIBuyerAgent(user_id=current_user.user_id)
 
     intent, parsed_budget, category = buyer.extract_intent_and_budget(user_query)
     effective_budget = max_budget if max_budget > 0 else parsed_budget
@@ -376,7 +461,12 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
 
     state_machine.transition_to("DISCOVERED")
     q = ProductQuery(query_text=user_query, max_budget_inr=effective_budget)
-    results, match_count, search_meta = catalog.structured_search(q)
+    try:
+        results, match_count, search_meta = catalog.search_for_agent(q)
+    except RuntimeError as search_error:
+        audit_ledger.record_event("AMAZON_MCP", "FAILED", "Amazon MCP Search Failed",
+                                  {"session_id": session_id, "error": str(search_error)}, session_id=session_id)
+        raise HTTPException(status_code=503, detail="Product source is temporarily unavailable.") from search_error
 
     detected_cats = search_meta.get("detected_categories", [])
     top_score = search_meta.get("top_structured_score", 0.0)
@@ -392,7 +482,7 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
             "detected_categories": detected_cats,
             "match_count": match_count,
             "top_score": top_score,
-            "search_method": "structured_field_scoring",
+            "search_method": search_meta.get("search_method", "structured_field_scoring"),
         },
         session_id=session_id,
     )
@@ -535,7 +625,17 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
     telemetry_logs.append({"section": "RAZORPAY_ORDER", "text": f"> Razorpay Order Created: {order_res.order_id}"})
     telemetry_logs.append({"section": "TOKEN_VERIFICATION", "text": "> AP2 Mandate Signature Valid — Dispatching Payment"})
 
-    # Execute real payment (hits Razorpay API in test mode) or simulate locally
+    if razorpay_service.client:
+        checkout = razorpay_service.register_checkout(order_res, cart, session_id)
+        audit_ledger.record_event(
+            actor="RAZORPAY_API", state="PAYMENT_PENDING", title="Razorpay Standard Checkout Opened",
+            details={"session_id": session_id, "order_id": order_res.order_id,
+                     "total_amount_inr": cart.total_amount_inr}, session_id=session_id,
+        )
+        return {"status": "PENDING_CHECKOUT", "session_id": session_id, "cart": cart,
+                "product": base_product, "mandate_validation": val_res, "checkout": checkout,
+                "panel_a_chat": chat_transcript, "panel_b_telemetry": telemetry_logs}
+
     try:
         payment_id, signature = razorpay_service.execute_payment(order_res.order_id, order_res.amount_paise)
     except RuntimeError as payment_error:
@@ -639,7 +739,7 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
     )
 
     audit_hex_id = audit_rec_final.details.get("audit_record_id", "0x8F4A1C9")
-    telemetry_logs.append({"section": "DB_LOGGER", "text": "> State Logged to SQLite Database Ledger"})
+    telemetry_logs.append({"section": "DB_LOGGER", "text": "> State Logged to DynamoDB Ledger"})
     telemetry_logs.append({"section": "AUDIT_RECORD", "text": f"[AUDIT RECORD ID: {audit_hex_id}]"})
 
     receipt = OrderReceipt(
@@ -671,6 +771,41 @@ def run_autonomous_commerce_flow(payload: Dict[str, Any] = None):
             "additional_revenue_inr": upsell_subtotal,
         },
     }
+
+
+@app.post("/api/orders/{order_id}/payment-method", tags=["Commerce Pipeline"])
+def select_payment_method(
+    order_id: str,
+    payload: Dict[str, Any],
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Explicit payment-method selection step, required before checkout.
+
+    The AI/agent never picks a payment method — the authenticated user must
+    submit one of the methods actually supported by the configured Razorpay
+    mode. This only records the choice in the audit ledger; it does not
+    move money.
+    """
+    method = (payload or {}).get("payment_method", "").lower()
+    supported = {"upi", "card", "netbanking", "razorpay_test"} if razorpay_service.mode == "test" else {"razorpay_test"}
+    if method not in supported:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported payment method '{method}'. Supported: {sorted(supported)}",
+        )
+    context = razorpay_service.pending_checkouts.get(order_id)
+    if not context:
+        raise HTTPException(status_code=404, detail="Order not found or checkout not initialized.")
+    event = audit_ledger.record_event(
+        actor="USER",
+        state="PAYMENT_METHOD_SELECTED",
+        title="User selected payment method",
+        details={"order_id": order_id, "payment_method": method, "user_id": current_user.user_id},
+        session_id=context.get("session_id"),
+    )
+    return {"status": "PAYMENT_METHOD_SELECTED", "order_id": order_id, "payment_method": method,
+            "audit_record_id": event.details.get("audit_record_id")}
 
 
 @app.post("/api/razorpay/verify", tags=["Commerce Pipeline"])

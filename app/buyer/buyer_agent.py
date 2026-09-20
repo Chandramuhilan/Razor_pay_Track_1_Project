@@ -1,5 +1,5 @@
 """
-Dynamic Autonomous AI Buyer Agent Simulator with Google GenAI / Gemini API Integration.
+Dynamic Autonomous AI Buyer Agent powered by AWS Bedrock.
 Parses natural language directives, issues AP2 Bounded Mandates,
 evaluates merchant upsell proposals dynamically, and manages counter-negotiations.
 
@@ -15,34 +15,29 @@ from typing import Tuple, Optional
 from app.models import AP2MandateSignature, ProductQuery, UpsellOffer, Product
 from app.protocols.ap2_mandate import AP2MandateEngine
 from app.config import settings
+from app.services.ai_service import ai_service
 
 class AIBuyerAgent:
     def __init__(self, agent_id: str = "buyer_agent_alpha_01", user_id: str = "user_dev_rahul"):
         self.agent_id = agent_id
         self.user_id = user_id
-        self._client = None
-        self._gemini_error = None
-
-        if not settings.is_gemini_configured():
-            self._gemini_error = "GEMINI_API_KEY is required. Set it in .env file. Get a free key at https://aistudio.google.com/app/apikey"
-        else:
-            try:
-                from google import genai
-                self._client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            except Exception as e:
-                self._client = None
-                self._gemini_error = f"Failed to initialize Gemini client: {e}"
+        self._bedrock_error = (
+            None
+            if ai_service.is_available
+            else "AWS Bedrock is unavailable. Configure AWS credentials and AWS_REGION."
+        )
 
     @property
-    def genai_client(self):
-        if not self._client and self._gemini_error:
-            raise RuntimeError(self._gemini_error)
-        return self._client
+    def bedrock_client(self):
+        if self._bedrock_error:
+            raise RuntimeError(self._bedrock_error)
+        return ai_service
 
     def get_status(self) -> dict:
         return {
-            'gemini_configured': settings.is_gemini_configured(),
-            'gemini_error': self._gemini_error,
+            'ai_provider': settings.ai_provider(),
+            'ai_mode': settings.ai_mode(),
+            'ai_error': self._bedrock_error,
             'agent_id': self.agent_id
         }
 
@@ -50,29 +45,17 @@ class AIBuyerAgent:
         """
         Parses intent, budget limit in INR, and target product category from arbitrary user input.
         """
-        if settings.is_gemini_configured() and self._client:
+        if ai_service.is_available:
             try:
-                prompt = f'Parse this purchase request and return ONLY valid JSON with keys: intent (string describing what they want), budget_inr (number, extract from text or use 50000 as default), category (one of: charging/laptops/peripherals/displays/audio/electronics). Request: "{user_prompt}"'
-                
-                response = self._client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
+                text = ai_service.generate(
+                    f'Parse this purchase request and return ONLY valid JSON with keys: intent, budget_inr, category. '
+                    f'Category must be one of charging/laptops/peripherals/displays/audio/electronics. '
+                    f'Use 50000 as the default budget. Request: "{user_prompt}"'
                 )
-                
-                if response and response.text:
-                    text = response.text.strip()
-                    if text.startswith('```json'):
-                        text = text[7:]
-                    if text.startswith('```'):
-                        text = text[3:]
-                    if text.endswith('```'):
-                        text = text[:-3]
-                    
-                    data = json.loads(text.strip())
-                    return data.get('intent', 'Hardware Procurement'), float(data.get('budget_inr', 50000.0)), data.get('category', 'electronics')
+                data = json.loads(text.replace("```json", "").replace("```", "").strip())
+                return data.get('intent', 'Hardware Procurement'), float(data.get('budget_inr', 50000.0)), data.get('category', 'electronics')
             except Exception:
                 pass
-                
         # Regex fallback
         prompt_lower = user_prompt.lower()
         budget = 50000.0
@@ -127,22 +110,19 @@ class AIBuyerAgent:
         if headroom < 0:
             return False, f"REJECTED: Offer total ₹{upsell.new_cart_total_inr:,.2f} exceeds AP2 Mandate limit ₹{mandate.mandate.max_amount_inr:,.2f} by ₹{abs(headroom):,.2f}."
 
-        if settings.is_gemini_configured() and self._client:
+        if ai_service.is_available:
             try:
-                prompt = f"You are an AI Buyer Agent. Your user mandate cap is ₹{mandate.mandate.max_amount_inr}. Merchant offered {upsell.product.name} for ₹{upsell.additional_cost_inr}. Total order will be ₹{upsell.new_cart_total_inr}. Evaluate ROI, budget fit, and value proposition. Give a clear ACCEPT or REJECT decision followed by 1-sentence reasoning."
-                response = self._client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt
+                text = ai_service.generate(
+                    f"You are an AI Buyer Agent. The mandate cap is ₹{mandate.mandate.max_amount_inr}. "
+                    f"Evaluate this upsell: {upsell.product.name}, additional cost ₹{upsell.additional_cost_inr}, "
+                    f"new total ₹{upsell.new_cart_total_inr}. Reply ACCEPT or REJECT followed by one sentence."
                 )
-                if response and response.text:
-                    text = response.text.strip().upper()
-                    if "ACCEPT" in text and "REJECT" not in text.split("ACCEPT")[0]:
-                        return True, f"ACCEPTED (Gemini LLM Reasoned): {response.text.strip()}"
-                    else:
-                        return False, f"REJECTED (Gemini LLM Reasoned): {response.text.strip()}"
+                upper = text.upper()
+                if "ACCEPT" in upper and "REJECT" not in upper.split("ACCEPT")[0]:
+                    return True, f"ACCEPTED (Bedrock reasoned): {text}"
+                return False, f"REJECTED (Bedrock reasoned): {text}"
             except Exception:
                 pass
-
         # Standard rule evaluation fallback
         accepted_categories = ["warranty", "charging", "peripherals", "accessories", "electronics", "laptops", "displays", "audio"]
         if upsell.product.category in accepted_categories and headroom >= 0:

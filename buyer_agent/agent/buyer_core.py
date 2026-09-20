@@ -1,7 +1,7 @@
 """
 AI Buyer Core — Full Autonomous Purchase Pipeline.
 
-Powered by Gemini 2.5 Flash for:
+Powered by AWS Bedrock for:
 - Natural-language intent parsing (structured JSON output)
 - Upsell ROI reasoning
 - Negotiation logic
@@ -22,6 +22,7 @@ from app.config import settings
 from buyer_agent.agent.a2a_client import A2AClient
 from buyer_agent.agent.mcp_client import MCPClient
 from buyer_agent.agent.ap2_mandate import create_signed_mandate
+from app.services.ai_service import ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -31,51 +32,33 @@ class BuyerCore:
         self.merchant_url = settings.MERCHANT_AGENT_URL
         self.a2a = A2AClient(self.merchant_url)
         self.mcp = MCPClient(self.merchant_url)
-        self._genai = None
-        if settings.is_gemini_configured():
-            try:
-                from google import genai
-                self._genai = genai.Client(api_key=settings.GEMINI_API_KEY)
-            except Exception as e:
-                logger.warning("Gemini client init failed: %s", e)
+        if not ai_service.is_available:
+            logger.warning("AWS Bedrock is unavailable; using rule-based AI fallback.")
 
     # ── SSE helper ───────────────────────────────────────────────────────────
     def _sse(self, type_: str, **kwargs) -> str:
         return f"data: {json.dumps({'type': type_, **kwargs})}\n\n"
 
-    # ── Gemini intent parsing ─────────────────────────────────────────────────
+    # ── Bedrock intent parsing ─────────────────────────────────────────────────
     async def parse_intent(self, query: str, budget: float) -> dict:
-        if self._genai:
+        if ai_service.is_available:
             try:
-                from google.genai import types as gtypes
                 prompt = (
-                    f"Parse this purchase request and return ONLY valid JSON.\n"
-                    f"Request: \"{query}\"\n"
-                    f"User provided max budget: ₹{budget}\n\n"
-                    f"Return JSON with exactly these keys:\n"
-                    f"  intent: one-sentence description of what they want\n"
-                    f"  budget_inr: number (use {budget} if not found in text)\n"
-                    f"  category: one of [charging, laptops, peripherals, displays, audio, electronics]\n"
-                    f"  constraints: array of specific requirements mentioned"
+                    f"Parse this purchase request and return ONLY valid JSON with keys "
+                    f"intent, budget_inr, category, constraints. Request: {query!r}. "
+                    f"User max budget: {budget}. Category must be one of charging, laptops, "
+                    f"peripherals, displays, audio, electronics."
                 )
-                response = self._genai.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config=gtypes.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    ),
-                )
-                parsed = json.loads(response.text)
+                parsed = json.loads(ai_service.generate(prompt).replace("```json", "").replace("```", "").strip())
                 return {
                     "intent": str(parsed.get("intent", query)),
                     "budget_inr": float(parsed.get("budget_inr", budget)),
                     "category": str(parsed.get("category", "electronics")),
                     "constraints": list(parsed.get("constraints", [])),
                 }
-            except Exception as e:
-                logger.warning("Gemini intent parse failed: %s", e)
-
-        # Regex fallback (when Gemini unavailable)
+            except Exception as exc:
+                logger.warning("Bedrock intent parse failed: %s", exc)
+        # Regex fallback when Bedrock is unavailable or returns invalid output.
         import re
         category = "electronics"
         for kw, cat in [
@@ -110,7 +93,7 @@ class BuyerCore:
                     "Add keys to .env for full live mode."
                 ),
                 setup_urls={
-                    "GEMINI_API_KEY": "https://aistudio.google.com/app/apikey",
+                    "AWS_REGION": "https://docs.aws.amazon.com/bedrock/latest/userguide/setting-up.html",
                     "RAZORPAY": "https://dashboard.razorpay.com",
                 },
             )
@@ -125,8 +108,8 @@ class BuyerCore:
 
         yield self._sse("SYSTEM", message=f"Session {session_id} started. Merchant online ✓")
 
-        # ── Step 2: Parse intent with Gemini ──────────────────────────────────
-        yield self._sse("SYSTEM", message="Parsing purchase intent with Gemini 2.5 Flash…")
+        # ── Step 2: Parse intent with Bedrock ──────────────────────────────────
+        yield self._sse("SYSTEM", message=f"Parsing purchase intent with {settings.ai_provider()}…")
         intent = await self.parse_intent(query, budget)
         effective_budget = intent["budget_inr"]
 
@@ -272,6 +255,12 @@ class BuyerCore:
                                 receipt=receipt_data,
                                 session_id=session_id,
                             )
+
+                        elif ev_type == "CHECKOUT_REQUIRED":
+                            # Preserve the merchant's user-initiated checkout event;
+                            # the buyer UI must not silently replace it with a payment.
+                            yield self._sse("CHECKOUT_REQUIRED", order=ev.get("order", {}),
+                                            merchant_url=self.merchant_url)
 
                         elif ev_type == "ERROR":
                             yield self._sse("ERROR", detail=ev.get("detail", "Commerce pipeline error"))

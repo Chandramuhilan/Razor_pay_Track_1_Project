@@ -40,7 +40,7 @@
           <span class="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span> SSE Streaming Active
         </span>
         <span class="px-2.5 py-1 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-800 flex items-center gap-1.5">
-          <i class="fa-solid fa-database text-emerald-400"></i> SQLite DB Ledger
+          <i class="fa-solid fa-database text-emerald-400"></i> DynamoDB Ledger
         </span>
         <span class="px-2.5 py-1 rounded-full bg-sky-950 text-sky-400 border border-sky-800 flex items-center gap-1.5">
           <i class="fa-solid fa-credit-card text-sky-400"></i> Razorpay Test Mode
@@ -169,7 +169,7 @@
 
         <!-- Panel Footer Record Hash -->
         <div class="pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400 term-font">
-          <span>Ledger DB: SQLite (merchant_ledger.db)</span>
+          <span>Ledger DB: DynamoDB (merchant-agent)</span>
           <span id="auditRecordIdBadge" class="text-indigo-400 font-bold">[AUDIT RECORD ID: --]</span>
         </div>
       </div>
@@ -184,7 +184,7 @@
             <i class="fa-solid fa-database text-sm"></i>
           </div>
           <div>
-            <h3 class="text-sm font-bold text-slate-100">SQLite Database Audit Ledger</h3>
+            <h3 class="text-sm font-bold text-slate-100">DynamoDB Audit Ledger</h3>
             <p class="text-[11px] text-slate-400">Durable transaction history stored in merchant database</p>
           </div>
         </div>
@@ -392,9 +392,20 @@
           return;
         }
         let paymentFailed = false;
-        const checkout = new Razorpay({
+        const checkoutOptions = {
           ...event.order,
+          retry: {enabled: true, max_count: 3},
+          notes: {
+            test_payment_hint: 'Use a domestic card from the Razorpay Test Mode dashboard.'
+          },
+          method: {
+            upi: false,
+            card: true,
+            netbanking: true,
+            wallet: true
+          },
           handler: async function (response) {
+            window.activeCheckout = null;
             const verify = await fetch('/api/razorpay/verify', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
@@ -406,17 +417,20 @@
               : {type: 'ERROR', detail: result.detail || 'Checkout verification failed.'});
           },
           modal: {ondismiss: function () {
+            window.activeCheckout = null;
             if (!paymentFailed) {
-              handleStreamEvent({type: 'ERROR', detail: 'Razorpay Checkout was cancelled. No payment was confirmed.'});
+              handleStreamEvent({type: 'ERROR', detail: 'Razorpay Checkout was cancelled. No payment was confirmed. In Test Mode, use UPI ID success@razorpay.'});
             }
           }}
-        });
+        };
+        const checkout = new Razorpay(checkoutOptions);
         window.activeCheckout = checkout;
         checkout.on('payment.failed', async function (response) {
           if (paymentFailed) {
             return;
           }
           paymentFailed = true;
+          window.activeCheckout = null;
           const error = response.error || {};
           await fetch('/api/razorpay/failure', {
             method: 'POST',
@@ -433,7 +447,7 @@
           handleStreamEvent({
             type: 'ERROR',
             source: 'RAZORPAY_API',
-            detail: `Razorpay payment failed [${error.code || 'UNKNOWN'}]: ${error.description || error.reason || 'Authorization was declined.'} Try UPI with success@razorpay or another Razorpay test card.`
+            detail: `Razorpay payment failed [${error.code || 'UNKNOWN'}]: ${error.description || error.reason || 'Authorization was declined.'} Use a domestic card listed in your Razorpay Test Mode dashboard.`
           });
         });
         checkout.open();

@@ -2,7 +2,7 @@
 First-Class Immutable Cryptographic Audit Trail Ledger.
 Maintains a tamper-evident, hash-chained log of all agent interactions,
 upsell justifications, AP2 mandate validations, and Razorpay API responses,
-persisted into SQLite Database.
+persisted into DynamoDB.
 """
 
 import hashlib
@@ -37,7 +37,7 @@ class AuditLedgerEngine:
 
     def record_event(self, actor: str, state: str, title: str, details: Dict[str, Any], session_id: str = "#TX-9042") -> AuditEvent:
         """
-        Appends a new event to the ledger with hash chaining and SQLite DB persistence.
+        Appends a new event to the ledger with hash chaining and DynamoDB persistence.
         """
         prev = self.events[-1]
         seq = prev.sequence + 1
@@ -60,7 +60,7 @@ class AuditLedgerEngine:
         event.current_hash = self._compute_hash(event)
         self.events.append(event)
 
-        # Persist to SQLite DB
+        # Persist to DynamoDB
         audit_rec_id = self.db_ledger.insert_record(
             session_id=session_id,
             seq=seq,

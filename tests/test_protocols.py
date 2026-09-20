@@ -51,7 +51,7 @@ def test_google_a2a_agent_card_endpoint():
     assert "dynamic_margin_upsell" in skill_ids
     assert "ap2_bounded_mandate_verification" in skill_ids
     assert "razorpay_test_checkout" in skill_ids
-    assert "sqlite_audit_ledger" in skill_ids
+    assert "dynamodb_audit_ledger" in skill_ids
 
     # Real AgentProvider
     assert data["provider"]["organization"] == "TechVerse Systems"

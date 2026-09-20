@@ -104,11 +104,11 @@ def _build_agent_card() -> AgentCard:
             "tags": ["razorpay", "payment", "checkout"],
         },
         {
-            "id": "sqlite_audit_ledger",
+            "id": "dynamodb_audit_ledger",
             "name": "Cryptographic Audit Ledger",
             "description": (
                 "Tamper-evident SHA-256 hash-chained audit log of every "
-                "agent action, persisted to SQLite. Full explainability."
+                "agent action, persisted to DynamoDB. Full explainability."
             ),
             "tags": ["audit", "explainability", "ledger"],
         },
